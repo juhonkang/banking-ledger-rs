@@ -1,0 +1,26 @@
+[Unit]
+Description=Banking Ledger API Server
+After=network.target
+
+[Service]
+Type=simple
+User=quincy
+WorkingDirectory=/home/quincy/banking-ledger-rs
+ExecStart=/home/quincy/banking-ledger-rs/target/release/banking-ledger
+Restart=always
+RestartSec=5
+Environment=RUST_LOG=info
+
+# Security hardening
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/quincy/banking-ledger-rs/target
+PrivateTmp=yes
+
+# Resource limits
+LimitNOFILE=65535
+MemoryMax=2G
+
+[Install]
+WantedBy=multi-user.target
