@@ -16,69 +16,50 @@
 
 ## System Architecture
 
-```
-┌─────────────────────────────────────────────────────────┐
-│                      CLIENT                             │
-│              HTTP REST (JSON over TLS)                   │
-└─────────────────────┬───────────────────────────────────┘
-                      │
-┌─────────────────────▼───────────────────────────────────┐
-│                   API LAYER                              │
-│  axum :: Router                                         │
-│  ┌──────────┬──────────┬──────────┬──────────────────┐  │
-│  │ /health  │/accounts │/transfers│ /admin/metrics   │  │
-│  │ GET      │ CRUD     │ POST     │ GET              │  │
-│  └──────────┴──────────┴──────────┴──────────────────┘  │
-│  Middleware: CircuitBreaker, GoldenSignals, RateLimit   │
-└─────────────────────┬───────────────────────────────────┘
-                      │
-┌─────────────────────▼───────────────────────────────────┐
-│                 SERVICE LAYER                            │
-│  ┌─────────────┐  ┌──────────────┐  ┌────────────────┐  │
-│  │ LedgerSvc   │  │ AccountSvc   │  │ IdentitySvc    │  │
-│  │ (double     │  │ (CAS balance │  │ (Party +       │  │
-│  │  entry)     │  │  DashMap)    │  │  Identifier)   │  │
-│  └──────┬──────┘  └──────┬───────┘  └────────────────┘  │
-│         │                │                               │
-│  ┌──────┴────────────────┴──────────────────────────┐   │
-│  │              Concurrency Arsenal                  │   │
-│  │  CAS loop · Condvar · FairQueue · Bulkhead       │   │
-│  │  CircuitBreaker · TokenBucket · ChaosAgent       │   │
-│  └──────────────────────────────────────────────────┘   │
-└─────────────────────┬───────────────────────────────────┘
-                      │
-┌─────────────────────▼───────────────────────────────────┐
-│                  DOMAIN LAYER                            │
-│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐   │
-│  │ Account  │ │ Journal  │ │ Money    │ │ Party    │   │
-│  │AtomicI64 │ │Entry(legs│ │Decimal+  │ │UUID v7   │   │
-│  │ CAS bal  │ │ immutable│ │Currency  │ │Identifier│   │
-│  └──────────┘ └──────────┘ └──────────┘ └──────────┘   │
-│  ┌──────────┐ ┌──────────┐ ┌──────────────────────┐     │
-│  │ COA      │ │ Saga     │ │ Resilience           │     │
-│  │Tree struct│ │Orch+Chor │ │Chaos+Circuit+Signal │     │
-│  └──────────┘ └──────────┘ └──────────────────────┘     │
-└─────────────────────┬───────────────────────────────────┘
-                      │
-┌─────────────────────▼───────────────────────────────────┐
-│                   LOG LAYER                              │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐   │
-│  │ RingBuffer   │  │ EventLog     │  │ HashChain    │   │
-│  │ Cache-padded │  │ WAL + CQRS   │  │ SHA-256      │   │
-│  │ Lock-free    │  │ Snapshot     │  │ Immutable    │   │
-│  └──────────────┘  └──────────────┘  └──────────────┘   │
-│  ┌──────────────────────────────────────────────────┐    │
-│  │ EventBus: Partitioned + Idempotent + ExactlyOnce │    │
-│  └──────────────────────────────────────────────────┘    │
-└─────────────────────┬───────────────────────────────────┘
-                      │
-┌─────────────────────▼───────────────────────────────────┐
-│                 STORE LAYER                              │
-│  ┌──────────────────────────────────────────────────┐    │
-│  │ SurrealClient (pure Rust TCP, zero deps)         │    │
-│  │ Account ⟷ journal_entry tables                   │    │
-│  └──────────────────────────────────────────────────┘    │
-└─────────────────────────────────────────────────────────┘
+```mermaid
+graph TD
+    CLIENT["CLIENT<br/>HTTP REST (JSON over TLS)"]
+    
+    subgraph API["API LAYER — axum::Router"]
+        HEALTH["/health<br/>GET"]
+        ACCOUNTS["/accounts<br/>CRUD"]
+        TRANSFERS["/transfers<br/>POST"]
+        METRICS["/admin/metrics<br/>GET"]
+    end
+    
+    subgraph SERVICE["SERVICE LAYER"]
+        LS["LedgerSvc<br/>double-entry"]
+        AS["AccountSvc<br/>CAS balance<br/>DashMap"]
+        IS["IdentitySvc<br/>Party + Identifier"]
+        CONCURRENCY["Concurrency Arsenal<br/>CAS · Condvar · FairQueue · Bulkhead<br/>CircuitBreaker · TokenBucket · ChaosAgent"]
+    end
+    
+    subgraph DOMAIN["DOMAIN LAYER"]
+        ACC["Account<br/>AtomicI64 CAS"]
+        JRN["Journal<br/>immutable entries"]
+        MON["Money<br/>Decimal + Currency"]
+        PTY["Party<br/>UUID v7"]
+        COA["COA<br/>tree struct"]
+        SAGA["Saga<br/>Orch + Choreo"]
+        RES["Resilience<br/>Chaos + Circuit + Signals"]
+    end
+    
+    subgraph LOG["LOG LAYER"]
+        RB["RingBuffer<br/>cache-padded<br/>lock-free"]
+        EL["EventLog<br/>WAL + CQRS<br/>snapshots"]
+        HC["HashChain<br/>SHA-256<br/>immutable"]
+        EB["EventBus<br/>partitioned · idempotent<br/>exactly-once"]
+    end
+    
+    subgraph STORE["STORE LAYER"]
+        SURREAL["SurrealClient<br/>pure Rust TCP<br/>account ↔ journal_entry"]
+    end
+    
+    CLIENT --> API
+    API --> SERVICE
+    SERVICE --> DOMAIN
+    DOMAIN --> LOG
+    LOG --> STORE
 ```
 
 ---
@@ -87,50 +68,42 @@
 
 ### Transfer (Double-Entry)
 
-```
-Client                    API                    LedgerService              Journal
-  │                        │                         │                        │
-  │ POST /transfers        │                         │                        │
-  │ {from,to,amount}       │                         │                        │
-  │───────────────────────▶│                         │                        │
-  │                        │ CircuitBreaker.check()  │                        │
-  │                        │────────────────────────▶│                        │
-  │                        │                         │ Validate accounts      │
-  │                        │                         │ Debit from_account     │
-  │                        │                         │  └─ CAS loop (Atomic)  │
-  │                        │                         │ Credit to_account      │
-  │                        │                         │  └─ fetch_add (Atomic) │
-  │                        │                         │ Create JournalEntry    │
-  │                        │                         │───────────────────────▶│
-  │                        │                         │                        │ append(entry)
-  │                        │                         │ ◀──────────────────────│
-  │                        │                         │ Verify: debits=credits │
-  │                        │ ◀────────────────────────│                        │
-  │ ◀──────────────────────│                         │                        │
-  │ 200 {txn_id, balances} │                         │                        │
+```mermaid
+sequenceDiagram
+    participant Client
+    participant API
+    participant LedgerService
+    participant Journal
+    
+    Client->>API: POST /transfers {from,to,amount}
+    API->>LedgerService: CircuitBreaker.check()
+    LedgerService->>LedgerService: Validate accounts
+    LedgerService->>LedgerService: Debit from_account (CAS loop atomic)
+    LedgerService->>LedgerService: Credit to_account (fetch_add atomic)
+    LedgerService->>Journal: Create JournalEntry
+    Journal-->>LedgerService: append(entry)
+    LedgerService->>LedgerService: Verify: debits = credits
+    LedgerService-->>API: success
+    API-->>Client: 200 {txn_id, balances}
 ```
 
 ### Balance Update (CAS Loop)
 
-```
-Thread A                    AtomicI64(available)           Thread B
-  │                              │                            │
-  │ load(available) = 1000       │                            │
-  │─────────────────────────────▶│                            │
-  │                              │                            │
-  │ check: 1000 >= 100 ✓         │  load(available) = 1000    │
-  │ new = 1000 - 100 = 900       │◀───────────────────────────│
-  │                              │                            │
-  │ CAS(1000, 900)               │  check: 1000 >= 50 ✓       │
-  │─────────────────────────────▶│  new = 1000 - 50 = 950     │
-  │         ✓ SUCCESS            │                            │
-  │                              │  CAS(1000, 950)            │
-  │                              │◀───────────────────────────│
-  │                              │         ✗ FAIL (now 900)   │
-  │                              │                            │
-  │                              │  RETRY: load = 900         │
-  │                              │  check: 900 >= 50 ✓        │
-  │                              │  CAS(900, 850) → ✓         │
+```mermaid
+sequenceDiagram
+    participant A as Thread A
+    participant Bal as AtomicI64(available)
+    participant B as Thread B
+    
+    A->>Bal: load → 1000
+    B->>Bal: load → 1000
+    A->>A: check: 1000 >= 100 ✓<br/>new = 900
+    B->>B: check: 1000 >= 50 ✓<br/>new = 950
+    A->>Bal: CAS(1000, 900) ✓ SUCCESS
+    B->>Bal: CAS(1000, 950) ✗ FAIL (now 900)
+    B->>Bal: RETRY: load → 900
+    B->>B: check: 900 >= 50 ✓
+    B->>Bal: CAS(900, 850) ✓
 ```
 
 ---
@@ -172,17 +145,14 @@ Thread A                    AtomicI64(available)           Thread B
 
 ### State Machine
 
-```
-  ┌──────┐  freeze   ┌────────┐
-  │ OPEN │──────────▶│ FROZEN │
-  │      │◀──────────│        │
-  └──┬───┘  unfreeze └───┬────┘
-     │                   │
-     │ close             │ close
-     ▼                   ▼
-  ┌────────┐
-  │ CLOSED │ (irreversible)
-  └────────┘
+```mermaid
+stateDiagram-v2
+    [*] --> OPEN
+    OPEN --> FROZEN: freeze
+    FROZEN --> OPEN: unfreeze
+    OPEN --> CLOSED: close
+    FROZEN --> CLOSED: close
+    CLOSED --> [*]
 ```
 
 ---
@@ -256,10 +226,14 @@ loop {
 
 ### Lock Hierarchy (cold paths only)
 
-```
-journal.write()           ← acquired only on append (infrequent)
-  └─ accounts.read()      ← shared read lock (never blocks writes)
-       └─ account.debit() ← lock-free CAS loop
+```mermaid
+graph TD
+    JOURNAL["journal.write()<br/>acquired only on append<br/>(infrequent)"]
+    ACCOUNTS["accounts.read()<br/>shared read lock<br/>(never blocks writes)"]
+    DEBIT["account.debit()<br/>lock-free CAS loop"]
+    
+    JOURNAL --> ACCOUNTS
+    ACCOUNTS --> DEBIT
 ```
 
 ### Memory Ordering
