@@ -1,0 +1,7 @@
+target/
+.git/
+.github/
+.hermes/
+*.md
+!README.md
+test_api.py

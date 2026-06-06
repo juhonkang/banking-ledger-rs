@@ -1,0 +1,8 @@
+/target/
+**/*.rs.bk
+*.pdb
+.env
+*.swp
+*.swo
+.hermes/
+*.log
