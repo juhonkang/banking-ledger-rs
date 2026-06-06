@@ -132,9 +132,45 @@ cargo test deep_correctness_tests
 
 ## Commits
 
-28 conventional commits on `dev` branch:
+### Current History (24 commits)
 
+```text
+05dd42b docs: convert ASCII diagrams to Mermaid format in architecture docs
+17baea8 chore: add Cargo.lock for reproducible builds
+9bc711c docs: add README, architecture documentation, and design documents
+e6adff2 ops: add Docker multi-stage build, Makefile, and systemd service
+8c91b50 ci: add GitHub Actions CI/CD pipeline verified with act
+4e9a589 test: add 25 API integration tests with curl-based TDD
+6cf22dd feat: add main entry point with all test suites
+6fe979e feat: add REST API server with Axum — accounts, transfers, journal audit, rate limiting
+69bbc64 feat: add SurrealDB persistence with pure Rust TCP client
+e30d369 feat: add service module structure and unit tests
+7b337d0 feat: add service layer — identity, account, and ledger orchestration
+ed6a224 feat: add saga orchestration, deadlock detection, and production utilities
+91d2ff7 feat: add concurrency primitives and resilience patterns
+a4a2365 feat: add log layer module structure with feature gates
+1a43484 feat: add lock-free RingBuffer and partitioned EventBus with fencing tokens
+e3f56f1 feat: add Write-Ahead Log with CRC-64, CQRS snapshots, and idempotent commands
+379dcb9 feat: add SHA-256 HashChain with cryptographic immutability and audit proofs
+708e67c feat: add domain module structure and unit tests
+b6ed831 feat: add hierarchical Chart of Accounts
+91a080a feat: add double-entry Journal with immutable self-validating entries
+b603e64 feat: add Account model with AtomicI64 CAS balance and hold mechanism
+1688bd5 feat: add Money type with rust_decimal and ISO 4217 Currency
+c989204 feat: add Party domain model with UUID v7 identity
+68b615e chore: initialize Rust banking ledger project
 ```
+
+### Historical (squash-rewritten — June 2026)
+
+> The original 28-commit history was **squashed and rewritten** into the 24-commit
+> clean history above. All `sysdr`/`course`/`Day` references were purged.
+> The hashes below no longer exist on any branch — preserved for reference only.
+
+<details>
+<summary>Original commits (click to expand)</summary>
+
+```text
 6e71fd9 docs: scrub final sysdr/90-day references from README + docs
 6ba34ee fix: Duration import #[cfg(test)] + RCA doc
 1fc50a0 ci: fix -D warnings — explicitly clear RUSTFLAGS + branches: main
@@ -152,6 +188,8 @@ cd2fed0 refactor: #[non_exhaustive] on all public enums
 fadb644 fix: restore Duration import removed by clippy --fix
 f14b2ab chore: remove accidental history.txt
 ```
+
+</details>
 
 All commits follow [Conventional Commits](https://www.conventionalcommits.org/) with prefixes: `feat`, `fix`, `test`, `docs`, `refactor`, `chore`, `ops`, `audit`, `ci`, `devops`.
 
