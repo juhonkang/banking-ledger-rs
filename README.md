@@ -26,14 +26,20 @@ python3 test_api.py          # 19 integration tests
 
 ## Architecture
 
-```
-CLIENT → API (axum) → SERVICE (ledger/account/identity)
-                         │
-                    DOMAIN (Account/Journal/Money)
-                         │
-                    LOG (RingBuffer/EventLog/HashChain)
-                         │
-                    STORE (SurrealDB @ :29180)
+```mermaid
+graph TD
+    CLIENT[CLIENT]
+    API[API — axum]
+    SERVICE[SERVICE<br/>ledger / account / identity]
+    DOMAIN[DOMAIN<br/>Account / Journal / Money]
+    LOG[LOG<br/>RingBuffer / EventLog / HashChain]
+    STORE[STORE<br/>SurrealDB]
+    
+    CLIENT --> API
+    API --> SERVICE
+    SERVICE --> DOMAIN
+    DOMAIN --> LOG
+    LOG --> STORE
 ```
 
 Full architecture: [ARCHITECTURE.md](ARCHITECTURE.md)

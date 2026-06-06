@@ -88,17 +88,20 @@ Banker's rounding minimizes cumulative bias over millions of transactions. Symme
 
 ### CAS Loop Correctness
 
-```
-Thread A                    AtomicI64(avail=1000)        Thread B
-  │                              │                          │
-  │ load() = 1000                │                          │
-  │ check: 1000 ≥ 100 ✓          │                          │
-  │                              │  load() = 1000           │
-  │                              │  check: 1000 ≥ 50 ✓      │
-  │ CAS(1000, 900) ✓             │                          │
-  │                              │  CAS(1000, 950) ✗        │
-  │                              │  RETRY: load() = 900     │
-  │                              │  CAS(900, 850) ✓         │
+```mermaid
+sequenceDiagram
+    participant A as Thread A
+    participant Bal as AtomicI64(avail=1000)
+    participant B as Thread B
+    
+    A->>Bal: load() → 1000
+    B->>Bal: load() → 1000
+    A->>A: check: 1000 ≥ 100 ✓
+    B->>B: check: 1000 ≥ 50 ✓
+    A->>Bal: CAS(1000, 900) ✓ SUCCESS
+    B->>Bal: CAS(1000, 950) ✗ FAIL
+    B->>Bal: RETRY: load() → 900
+    B->>Bal: CAS(900, 850) ✓
 ```
 
 **Proof:** Each CAS either succeeds (atomically updating the value) or fails (another thread won). On failure, the loop retries with the fresh value. The loop is bounded because:

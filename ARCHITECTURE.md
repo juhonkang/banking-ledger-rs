@@ -295,48 +295,53 @@ Debug:              55 MB
 
 ## File Map
 
-```
-banking-ledger-rs/
-├── src/
-│   ├── main.rs                    # Entry point + crate-level docs + lint attrs
-│   ├── domain/
-│   │   ├── account.rs             # Account (AtomicI64 CAS, holds, status machine)
-│   │   ├── journal.rs             # JournalEntry (immutable, self-validating)
-│   │   ├── money.rs               # Money (Decimal + Currency + Rounding)
-│   │   ├── party.rs               # Party (UUID v7, immutable identity)
-│   │   ├── identifier.rs          # Identifier (versioned, never overwritten)
-│   │   ├── coa.rs                 # Chart of Accounts (hierarchical tree)
-│   │   └── *_test.rs              # Unit tests per domain module
-│   ├── service/
-│   │   ├── ledger_service.rs      # Double-entry orchestration
-│   │   ├── account_service.rs     # DashMap account registry
-│   │   ├── identity_service.rs    # Party + Identifier management
-│   │   ├── concurrency.rs         # CAS, Condvar, RwLock, FairQueue, Race tests
-│   │   ├── saga.rs                # Saga Orchestrator + Outbox + Compensation
-│   │   ├── resilience.rs          # CircuitBreaker, Bulkhead, TokenBucket, Chaos
-│   │   ├── advanced.rs            # DeadlockDetector, LatencyHistogram, EventBus
-│   │   ├── production.rs          # PostMortem, Tuning, StressTest, Security
-│   │   └── *_test.rs              # Service-level tests
-│   ├── log/
-│   │   ├── ring_buffer.rs         # Cache-padded lock-free ring buffer
-│   │   ├── event_log.rs           # WAL + Event Sourcing + CQRS
-│   │   ├── hash_chain.rs          # SHA-256 chain + HMAC + Tamper detection
-│   │   └── event_bus.rs           # Partitioned + Idempotent + Exactly-Once
-│   ├── store/
-│   │   └── surrealdb.rs           # Pure Rust HTTP SurrealDB client
-│   ├── api/
-│   │   └── mod.rs                 # Axum router + 7 handlers
-│   ├── edge_cases_test.rs         # 17 boundary condition tests
-│   ├── exhaustive_edge_tests.rs   # 46 comprehensive edge case tests
-│   └── deep_correctness_tests.rs  # 5 correctness proof tests
-├── test_api.py                    # 19 API integration tests
-├── Cargo.toml                     # 14 dependencies
-├── Dockerfile                     # Multi-stage (5MB final image)
-├── Makefile                       # test, run, docker, bench, ci
-├── banking-ledger.service         # Systemd unit file
-├── .github/workflows/ci.yml      # CI/CD pipeline
-├── README.md                      # This file
-└── ARCHITECTURE.md                # Architecture document
+```mermaid
+graph LR
+    subgraph SRC["src/"]
+        MAIN["main.rs"]
+        subgraph DOM["domain/"]
+            ACC["account.rs"]
+            JRN["journal.rs"]
+            MON["money.rs"]
+            PTY["party.rs"]
+            IDN["identifier.rs"]
+            COA["coa.rs"]
+            TST["*_test.rs"]
+        end
+        subgraph SVC["service/"]
+            LS["ledger_service.rs"]
+            AS["account_service.rs"]
+            IS["identity_service.rs"]
+            CON["concurrency.rs"]
+            SAG["saga.rs"]
+            RES["resilience.rs"]
+            ADV["advanced.rs"]
+            PROD["production.rs"]
+        end
+        subgraph LOG["log/"]
+            RB["ring_buffer.rs"]
+            EL["event_log.rs"]
+            HC["hash_chain.rs"]
+            EB["event_bus.rs"]
+        end
+        subgraph STR["store/"]
+            SUR["surrealdb.rs"]
+        end
+        subgraph API["api/"]
+            API_MOD["mod.rs"]
+        end
+        EDGE["edge_cases_test.rs"]
+        EXH["exhaustive_edge_tests.rs"]
+        DEEP["deep_correctness_tests.rs"]
+    end
+    TEST["test_api.py"]
+    CARGO["Cargo.toml"]
+    DOCKER["Dockerfile"]
+    MAKE["Makefile"]
+    SVC_UNIT["banking-ledger.service"]
+    CI[".github/workflows/ci.yml"]
+    README["README.md"]
+    ARCH["ARCHITECTURE.md"]
 ```
 
 ---

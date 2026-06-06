@@ -4,10 +4,14 @@
 
 ## Lock Hierarchy
 
-```
-journal.write()           ← coldest path (append only, infrequent)
-  └─ accounts.read()      ← warm path (shared, never blocks reads)
-       └─ account.debit() ← HOTTEST path (lock-free CAS loop)
+```mermaid
+graph TD
+    JOURNAL["journal.write()<br/>coldest path<br/>append only, infrequent"]
+    ACCOUNTS["accounts.read()<br/>warm path<br/>shared, never blocks reads"]
+    DEBIT["account.debit()<br/>HOTTEST path<br/>lock-free CAS loop"]
+    
+    JOURNAL --> ACCOUNTS
+    ACCOUNTS --> DEBIT
 ```
 
 **Rule:** Locks are always acquired in this order. Lower locks never call upper locks — prevents deadlock by construction.

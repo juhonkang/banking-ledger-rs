@@ -16,25 +16,16 @@ Current account balances are a CACHED PROJECTION of the event log. The log is th
 
 ### Binary Layout
 
-```
-┌────────────────────────────────────────────┐
-│ Magic: 0x424C414C (4 bytes) — "BLAL"      │
-├────────────────────────────────────────────┤
-│ Version: u16 (2 bytes)                     │
-├────────────────────────────────────────────┤
-│ Sequence: u64 (8 bytes)                    │
-├────────────────────────────────────────────┤
-│ Timestamp: i64 (8 bytes) — Unix µs         │
-├────────────────────────────────────────────┤
-│ Event Type: u16 (2 bytes)                  │
-├────────────────────────────────────────────┤
-│ Payload Length: u32 (4 bytes)              │
-├────────────────────────────────────────────┤
-│ Payload: JSON (variable)                   │
-├────────────────────────────────────────────┤
-│ CRC-64: u64 (8 bytes)                      │
-└────────────────────────────────────────────┘
-```
+| Offset | Field | Size | Description |
+|--------|-------|------|-------------|
+| 0 | Magic | 4 bytes | `0x424C414C` ("BLAL") |
+| 4 | Version | 2 bytes | u16 format version |
+| 6 | Sequence | 8 bytes | u64 monotonically increasing |
+| 14 | Timestamp | 8 bytes | i64 Unix microseconds |
+| 22 | Event Type | 2 bytes | u16 event discriminator |
+| 24 | Payload Length | 4 bytes | u32 JSON payload size |
+| 28 | Payload | variable | JSON-encoded event data |
+| 28+N | CRC-64 | 8 bytes | u64 integrity checksum |
 
 ### Event Types
 
