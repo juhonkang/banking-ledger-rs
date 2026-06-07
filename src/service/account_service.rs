@@ -18,23 +18,24 @@ impl AccountService {
         }
     }
 
-    /// Create a new account with initial balance in cents
+    /// Create a new account with initial balance in cents.
+    /// Returns the created Account (cloned from inserted).
     pub fn create_account(
         &self,
         account_type: AccountType,
         currency: &str,
         initial_balance_cents: i64,
         owner_party_id: Option<uuid::Uuid>,
-    ) -> AccountId {
+    ) -> Account {
         let account = Account::new(
             account_type,
             currency,
             initial_balance_cents,
             owner_party_id,
         );
-        let id = account.id;
-        self.accounts.insert(id, account);
-        id
+        self.accounts.insert(account.id, account.clone());
+        // Return the clone (balances are snapshots from insert time)
+        account
     }
 
     /// Perform a debit on the account
@@ -82,12 +83,9 @@ impl AccountService {
         account.release_hold(amount_cents)
     }
 
-    /// Get account info
-    pub fn get_account(
-        &self,
-        account_id: AccountId,
-    ) -> Option<dashmap::mapref::one::Ref<'_, AccountId, Account>> {
-        self.accounts.get(&account_id)
+    /// Get account info (cloned)
+    pub fn get_account(&self, account_id: AccountId) -> Option<Account> {
+        self.accounts.get(&account_id).map(|a| a.value().clone())
     }
 
     /// Set account status
@@ -103,6 +101,28 @@ impl AccountService {
     /// Get balance in cents
     pub fn get_balance_cents(&self, account_id: AccountId) -> Option<i64> {
         self.accounts.get(&account_id).map(|a| a.balance_cents())
+    }
+
+    /// Get all accounts (clone — use sparingly)
+    pub fn all(&self) -> Vec<Account> {
+        self.accounts.iter().map(|e| e.value().clone()).collect()
+    }
+
+    /// Number of accounts
+    pub fn count(&self) -> usize {
+        self.accounts.len()
+    }
+
+    /// For persistence: iterate all accounts
+    pub fn for_each(&self, mut f: impl FnMut(&AccountId, &Account)) {
+        for entry in self.accounts.iter() {
+            f(entry.key(), entry.value());
+        }
+    }
+
+    /// Direct insert for startup restore (bypasses Account::new)
+    pub fn insert_raw(&self, id: AccountId, account: Account) {
+        self.accounts.insert(id, account);
     }
 }
 

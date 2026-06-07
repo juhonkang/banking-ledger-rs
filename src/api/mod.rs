@@ -29,13 +29,15 @@ use crate::service::identity_service::IdentityService;
 use crate::service::ledger_service::LedgerService;
 use crate::service::resilience::{CircuitBreaker, GoldenSignals, TokenBucket};
 use crate::service::saga::SagaOrchestrator;
+use crate::service::account_service::AccountService;
 
 use crate::store::SurrealStore;
 
 // ━━━ Shared Application State ━━━
 
 pub struct AppState {
-    pub accounts: RwLock<HashMap<AccountId, Account>>,
+    /// Thread-safe account registry (DashMap-backed)
+    pub account_service: AccountService,
     pub ledger: RwLock<Option<LedgerService>>,
     pub metrics: GoldenSignals,
     pub circuit_breaker: CircuitBreaker,
@@ -72,7 +74,7 @@ impl AppState {
         rbac.bind(default_auditor, crate::rbac::Role::Auditor);
 
         Self {
-            accounts: RwLock::new(HashMap::new()),
+            account_service: AccountService::new(),
             ledger: RwLock::new(None),
             metrics: GoldenSignals::new(1000),
             circuit_breaker: CircuitBreaker::new(10, std::time::Duration::from_secs(30)),
@@ -96,9 +98,9 @@ impl AppState {
         match store.load_all_accounts().await {
             Ok(accounts) => {
                 let count = accounts.len();
-                let mut guard = self.accounts.write().unwrap();
+                let svc = &self.account_service;
                 for acc in accounts {
-                    guard.insert(acc.id, acc);
+                    svc.insert_raw(acc.id, acc);
                 }
                 if count > 0 {
                     eprintln!("  Restored {count} accounts from SurrealDB");
@@ -324,11 +326,13 @@ fn persist_after_mutation(state: &Arc<AppState>) {
         let store = store.clone();
         // Extract all data upfront (drop all guards before tokio::spawn)
         let account_data: Vec<(uuid::Uuid, String, String, i64, i64, String)> = {
-            let guard = state.accounts.read().unwrap();
-            guard.iter().map(|(id, acc)| {
-                (*id, format!("{:?}", acc.account_type), acc.currency.clone(),
-                 acc.balance_cents(), acc.available_balance_cents(), format!("{:?}", acc.status()))
-            }).collect()
+            let svc = &state.account_service;
+            let mut items = Vec::new();
+            svc.for_each(|id, acc| {
+                items.push((*id, format!("{:?}", acc.account_type), acc.currency.clone(),
+                    acc.balance_cents(), acc.available_balance_cents(), format!("{:?}", acc.status())));
+            });
+            items
         };
         let journal_clone: Vec<JournalEntry> = state.journal.read().unwrap().clone();
         let chain_blocks = {
@@ -379,11 +383,14 @@ async fn create_account(
     };
 
     let currency = resolve_currency(&req.currency);
-    let account = Account::new(account_type, &req.currency, req.initial_balance_cents, None);
+    let account = state.account_service.create_account(
+        account_type,
+        &req.currency,
+        req.initial_balance_cents,
+        None,
+    );
 
     let response = AccountResponse::from_account(&account, &currency);
-    let id = account.id;
-    state.accounts.write().unwrap().insert(id, account);
 
     state.metrics.record_request(start.elapsed(), false);
     state.circuit_breaker.record_success();
@@ -397,13 +404,11 @@ async fn get_account(
     Path(id): Path<Uuid>,
 ) -> Result<Json<AccountResponse>, AppError> {
     let start = std::time::Instant::now();
-
-    let accounts = state.accounts.read().unwrap();
-    let account = accounts.get(&id).ok_or(AppError::NotFound)?;
+    let account = state.account_service.get_account(id).ok_or(AppError::NotFound)?;
     let currency = resolve_currency(&account.currency);
 
     state.metrics.record_request(start.elapsed(), false);
-    Ok(Json(AccountResponse::from_account(account, &currency)))
+    Ok(Json(AccountResponse::from_account(&account, &currency)))
 }
 
 async fn debit_account(
@@ -412,16 +417,14 @@ async fn debit_account(
     Json(req): Json<DebitRequest>,
 ) -> Result<Json<AccountResponse>, AppError> {
     let start = std::time::Instant::now();
-
-    let accounts = state.accounts.read().unwrap();
-    let account = accounts.get(&id).ok_or(AppError::NotFound)?;
+    let account = state.account_service.get_account(id).ok_or(AppError::NotFound)?;
 
     account
         .debit(req.amount_cents)
         .map_err(|e| AppError::BadRequest(format!("{e:?}")))?;
 
     let currency = resolve_currency(&account.currency);
-    let response = AccountResponse::from_account(account, &currency);
+    let response = AccountResponse::from_account(&account, &currency);
     state.metrics.record_request(start.elapsed(), false);
 
     persist_after_mutation(&state);
@@ -434,16 +437,14 @@ async fn credit_account(
     Json(req): Json<CreditRequest>,
 ) -> Result<Json<AccountResponse>, AppError> {
     let start = std::time::Instant::now();
-
-    let accounts = state.accounts.read().unwrap();
-    let account = accounts.get(&id).ok_or(AppError::NotFound)?;
+    let account = state.account_service.get_account(id).ok_or(AppError::NotFound)?;
 
     account
         .credit(req.amount_cents)
         .map_err(|e| AppError::BadRequest(format!("{e:?}")))?;
 
     let currency = resolve_currency(&account.currency);
-    let response = AccountResponse::from_account(account, &currency);
+    let response = AccountResponse::from_account(&account, &currency);
     state.metrics.record_request(start.elapsed(), false);
 
     persist_after_mutation(&state);
@@ -462,14 +463,12 @@ async fn set_account_status(
         "CLOSED" => AccountStatus::Closed,
         _ => return Err(AppError::BadRequest("Invalid status".into())),
     };
-
-    let accounts = state.accounts.read().unwrap();
-    let account = accounts.get(&id).ok_or(AppError::NotFound)?;
+    let account = state.account_service.get_account(id).ok_or(AppError::NotFound)?;
     account.set_status(new_status);
     let currency = resolve_currency(&account.currency);
 
     persist_after_mutation(&state);
-    Ok(Json(AccountResponse::from_account(account, &currency)))
+    Ok(Json(AccountResponse::from_account(&account, &currency)))
 }
 
 async fn transfer(
@@ -485,9 +484,8 @@ async fn transfer(
     let transaction_id = Uuid::now_v7();
 
     // Acquire both accounts
-    let accounts = state.accounts.read().unwrap();
-    let from_account = accounts.get(&req.from_account).ok_or(AppError::NotFound)?;
-    let to_account = accounts.get(&req.to_account).ok_or(AppError::NotFound)?;
+    let from_account = state.account_service.get_account(req.from_account).ok_or(AppError::NotFound)?;
+    let to_account = state.account_service.get_account(req.to_account).ok_or(AppError::NotFound)?;
 
     let currency = resolve_currency(&from_account.currency);
 
@@ -508,7 +506,9 @@ async fn transfer(
     let from_balance = from_account.balance_cents();
     let to_balance = to_account.balance_cents();
 
-    drop(accounts);
+    // Drop DashMap refs (held via from_account, to_account which are Refs)
+    drop(from_account);
+    drop(to_account);
 
     // ━━━ Create Journal Entry ━━━
     let mut seq = state.journal_seq.lock().unwrap();
@@ -631,7 +631,7 @@ async fn metrics_handler(State(state): State<Arc<AppState>>) -> Json<serde_json:
         "latency_p50_ms": p50.map(|d| d.as_millis() as u64),
         "latency_p99_ms": p99.map(|d| d.as_millis() as u64),
         "circuit_state": format!("{:?}", state.circuit_breaker.state()),
-        "accounts_count": state.accounts.read().unwrap().len(),
+        "accounts_count": state.account_service.count(),
         "journal_entries": state.journal.read().unwrap().len(),
         "chain_length": state.hash_chain.lock().unwrap().len(),
     }))
@@ -778,8 +778,7 @@ async fn account_snapshot(
     State(state): State<Arc<AppState>>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let accounts = state.accounts.read().unwrap();
-    let account = accounts.get(&id).ok_or(AppError::NotFound)?;
+    let account = state.account_service.get_account(id).ok_or(AppError::NotFound)?;
     let currency = resolve_currency(&account.currency);
     Ok(Json(account.snapshot(&currency)))
 }

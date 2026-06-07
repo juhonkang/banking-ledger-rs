@@ -104,6 +104,22 @@ pub struct Account {
     pub last_updated: std::sync::Mutex<chrono::DateTime<chrono::Utc>>,
 }
 
+impl Clone for Account {
+    fn clone(&self) -> Self {
+        Self {
+            id: self.id,
+            account_type: self.account_type,
+            currency: self.currency.clone(),
+            balance: AtomicI64::new(self.balance.load(Ordering::Acquire)),
+            available_balance: AtomicI64::new(self.available_balance.load(Ordering::Acquire)),
+            status: std::sync::Mutex::new(*self.status.lock().unwrap()),
+            owner_party_id: self.owner_party_id,
+            created_at: self.created_at,
+            last_updated: std::sync::Mutex::new(*self.last_updated.lock().unwrap()),
+        }
+    }
+}
+
 impl Account {
     /// Create a new account with an initial balance in cents.
     #[must_use]
