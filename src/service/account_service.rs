@@ -47,8 +47,7 @@ impl AccountService {
         let account = self
             .accounts
             .get(&account_id)
-            .ok_or(DebitError::AccountNotOpen(AccountStatus::Closed))?;
-        // Note: this error mapping is imperfect; real system would have AccountNotFound
+            .ok_or(DebitError::AccountNotFound(account_id))?;
         account.debit(amount_cents)
     }
 
@@ -61,7 +60,7 @@ impl AccountService {
         let account = self
             .accounts
             .get(&account_id)
-            .ok_or(CreditError::AccountNotOpen(AccountStatus::Closed))?;
+            .ok_or(CreditError::AccountNotFound(account_id))?;
         account.credit(amount_cents)
     }
 
@@ -70,7 +69,7 @@ impl AccountService {
         let account = self
             .accounts
             .get(&account_id)
-            .ok_or(HoldError::InvalidAmount)?; // imperfect mapping
+            .ok_or(HoldError::AccountNotFound(account_id))?;
         account.place_hold(amount_cents)
     }
 
@@ -79,7 +78,7 @@ impl AccountService {
         let account = self
             .accounts
             .get(&account_id)
-            .ok_or(HoldError::InvalidAmount)?;
+            .ok_or(HoldError::AccountNotFound(account_id))?;
         account.release_hold(amount_cents)
     }
 

@@ -11,6 +11,7 @@ mod edge_tests {
     use crate::domain::journal::{EntryLeg, JournalEntry};
     use crate::domain::money::{Currency, Money, RoundingMode};
     use crate::log::hash_chain::HashChain;
+#[cfg(feature = "full")]
     use crate::service::concurrency::TransferCondition;
     use crate::service::resilience::{CircuitBreaker, GoldenSignals, TokenBucket};
 

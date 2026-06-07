@@ -88,7 +88,7 @@ impl Identifier {
             self.identifier_type.clone(),
             new_value,
             self.issuing_country.clone(),
-            self.effective_to,
+            self.effective_to, // Clone (DateTime<Utc> is Copy), old identifier keeps its expiry
         );
         replacement.replaces = Some(self.id);
         replacement.status = IdentifierStatus::Active;
