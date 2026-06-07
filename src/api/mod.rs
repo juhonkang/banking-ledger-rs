@@ -1072,7 +1072,7 @@ async fn add_identifier(
         other => IdentifierType::Other(other.to_string()),
     };
 
-    let mut svc = state.identity_service.write().unwrap();
+    let svc = state.identity_service.write().unwrap();
     let identifier = svc
         .add_identifier(party_id, id_type, &req.value, req.issuing_country.as_deref())
         .map_err(|e| AppError::BadRequest(e.to_string()))?;
