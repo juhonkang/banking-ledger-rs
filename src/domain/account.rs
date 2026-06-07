@@ -309,6 +309,9 @@ impl Account {
 /// Errors that can occur during a debit operation.
 #[derive(Debug, PartialEq, Eq, thiserror::Error)]
 pub enum DebitError {
+    /// Account does not exist
+    #[error("account not found: {0}")]
+    AccountNotFound(AccountId),
     /// Amount must be positive (zero or negative rejected)
     #[error("debit amount must be positive")]
     InvalidAmount,
@@ -328,6 +331,9 @@ pub enum DebitError {
 /// Errors that can occur during a credit operation.
 #[derive(Debug, PartialEq, Eq, thiserror::Error)]
 pub enum CreditError {
+    /// Account does not exist
+    #[error("account not found: {0}")]
+    AccountNotFound(AccountId),
     /// Amount must be positive
     #[error("credit amount must be positive")]
     InvalidAmount,
@@ -339,6 +345,9 @@ pub enum CreditError {
 /// Errors that can occur during hold operations.
 #[derive(Debug, PartialEq, Eq, thiserror::Error)]
 pub enum HoldError {
+    /// Account does not exist
+    #[error("account not found: {0}")]
+    AccountNotFound(AccountId),
     /// Amount must be positive
     #[error("hold amount must be positive")]
     InvalidAmount,

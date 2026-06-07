@@ -219,13 +219,21 @@ impl Money {
         Self { amount, currency }
     }
 
-    /// Convert to minor units (cents). Rounds with `HalfEven`.
+    /// Convert to minor units (cents). Panics on overflow.
+    /// Use `try_to_minor` for fallible conversion.
     #[must_use]
     pub fn to_minor(&self) -> i64 {
+        self.try_to_minor()
+            .expect("Money::to_minor overflow — value too large for i64 cents")
+    }
+
+    /// Fallible conversion to minor units. Returns None on overflow.
+    #[must_use]
+    pub fn try_to_minor(&self) -> Option<i64> {
         let scaled = self.amount * Decimal::from(self.currency.subunits_per_unit());
         let rounded =
             scaled.round_dp_with_strategy(0, rust_decimal::RoundingStrategy::MidpointNearestEven);
-        i64::try_from(rounded).unwrap_or(0)
+        i64::try_from(rounded).ok()
     }
 
     /// Multiply by a scalar (e.g., for fee calculation).
@@ -298,7 +306,8 @@ impl std::ops::Mul<Decimal> for Money {
 
 impl std::fmt::Display for Money {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{} {:.2}", self.currency.symbol, self.amount)
+        let decimals = self.currency.minor_unit as usize;
+        write!(f, "{} {:.*}", self.currency.symbol, decimals, self.amount)
     }
 }
 

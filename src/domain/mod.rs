@@ -12,3 +12,5 @@ pub mod money;
 #[cfg(test)]
 mod money_test;
 pub mod party;
+#[cfg(test)]
+mod party_identifier_test;
