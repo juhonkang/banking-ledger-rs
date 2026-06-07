@@ -126,6 +126,31 @@ impl AccountService {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dashmap_mutation_works() {
+        let svc = AccountService::new();
+        let acc = svc.create_account(AccountType::Asset, "USD", 1_000_000, None);
+        let id = acc.id;
+        assert_eq!(acc.balance_cents(), 1_000_000);
+
+        // Credit 500000 — must persist to DashMap
+        let new_bal = svc.perform_credit(id, 500_000).unwrap();
+        assert_eq!(new_bal, 1_500_000);
+        assert_eq!(svc.get_account(id).unwrap().balance_cents(), 1_500_000,
+            "credit should persist in DashMap");
+
+        // Debit 300000 — must persist
+        let new_bal = svc.perform_debit(id, 300_000).unwrap();
+        assert_eq!(new_bal, 1_200_000);
+        assert_eq!(svc.get_account(id).unwrap().balance_cents(), 1_200_000,
+            "debit should persist in DashMap");
+    }
+}
+
 impl Default for AccountService {
     fn default() -> Self {
         Self::new()

@@ -417,12 +417,12 @@ async fn debit_account(
     Json(req): Json<DebitRequest>,
 ) -> Result<Json<AccountResponse>, AppError> {
     let start = std::time::Instant::now();
-    let account = state.account_service.get_account(id).ok_or(AppError::NotFound)?;
 
-    account
-        .debit(req.amount_cents)
+    state.account_service
+        .perform_debit(id, req.amount_cents)
         .map_err(|e| AppError::BadRequest(format!("{e:?}")))?;
 
+    let account = state.account_service.get_account(id).ok_or(AppError::NotFound)?;
     let currency = resolve_currency(&account.currency);
     let response = AccountResponse::from_account(&account, &currency);
     state.metrics.record_request(start.elapsed(), false);
@@ -437,15 +437,16 @@ async fn credit_account(
     Json(req): Json<CreditRequest>,
 ) -> Result<Json<AccountResponse>, AppError> {
     let start = std::time::Instant::now();
-    let account = state.account_service.get_account(id).ok_or(AppError::NotFound)?;
 
-    account
-        .credit(req.amount_cents)
+    state.account_service
+        .perform_credit(id, req.amount_cents)
         .map_err(|e| AppError::BadRequest(format!("{e:?}")))?;
 
+    let account = state.account_service.get_account(id).ok_or(AppError::NotFound)?;
     let currency = resolve_currency(&account.currency);
     let response = AccountResponse::from_account(&account, &currency);
     state.metrics.record_request(start.elapsed(), false);
+    state.circuit_breaker.record_success();
 
     persist_after_mutation(&state);
     Ok(Json(response))
@@ -463,8 +464,10 @@ async fn set_account_status(
         "CLOSED" => AccountStatus::Closed,
         _ => return Err(AppError::BadRequest("Invalid status".into())),
     };
+    if !state.account_service.set_status(id, new_status) {
+        return Err(AppError::NotFound);
+    }
     let account = state.account_service.get_account(id).ok_or(AppError::NotFound)?;
-    account.set_status(new_status);
     let currency = resolve_currency(&account.currency);
 
     persist_after_mutation(&state);
@@ -483,30 +486,33 @@ async fn transfer(
     let description = req.description.unwrap_or_else(|| "Transfer".into());
     let transaction_id = Uuid::now_v7();
 
-    // Acquire both accounts
+    // Read currency from source account
+    let from_snapshot = state.account_service.get_account(req.from_account).ok_or(AppError::NotFound)?;
+    let currency = resolve_currency(&from_snapshot.currency);
+
+    // Execute transfer: debit from account via service
+    state.account_service
+        .perform_debit(req.from_account, req.amount_cents)
+        .map_err(|e| {
+            state.circuit_breaker.record_failure();
+            AppError::BadRequest(format!("Debit failed: {e:?}"))
+        })?;
+
+    // Credit to account via service
+    state.account_service
+        .perform_credit(req.to_account, req.amount_cents)
+        .map_err(|e| {
+            // Rollback: credit back the from_account
+            let _ = state.account_service.perform_credit(req.from_account, req.amount_cents);
+            state.circuit_breaker.record_failure();
+            AppError::BadRequest(format!("Credit failed: {e:?}"))
+        })?;
+
+    // Capture post-transfer balances
     let from_account = state.account_service.get_account(req.from_account).ok_or(AppError::NotFound)?;
     let to_account = state.account_service.get_account(req.to_account).ok_or(AppError::NotFound)?;
-
-    let currency = resolve_currency(&from_account.currency);
-
-    // Execute transfer: debit from, credit to
-    from_account.debit(req.amount_cents).map_err(|e| {
-        state.circuit_breaker.record_failure();
-        AppError::BadRequest(format!("Debit failed: {e:?}"))
-    })?;
-
-    to_account.credit(req.amount_cents).map_err(|e| {
-        // Rollback: credit back the from_account
-        let _ = from_account.credit(req.amount_cents);
-        state.circuit_breaker.record_failure();
-        AppError::BadRequest(format!("Credit failed: {e:?}"))
-    })?;
-
-    // Capture balances before releasing the read lock
     let from_balance = from_account.balance_cents();
     let to_balance = to_account.balance_cents();
-
-    // Drop DashMap refs (held via from_account, to_account which are Refs)
     drop(from_account);
     drop(to_account);
 
