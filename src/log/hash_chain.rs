@@ -230,6 +230,11 @@ impl HashChain {
         false // Always has genesis
     }
 
+    /// Get the signing key for HMAC operations.
+    pub fn signing_key(&self) -> &[u8] {
+        &self.signing_key
+    }
+
     /// Generate a Merkle-like proof that a block at index `i` is part of the chain.
     /// Returns (block, `previous_hash`, `next_hash`) for cross-verification.
     pub fn proof_for_block(&self, index: u64) -> Option<ChainProof> {

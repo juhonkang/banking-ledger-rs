@@ -32,6 +32,7 @@
 
 mod api;
 mod domain;
+mod extensions;
 mod log;
 mod service;
 mod store;

@@ -19,6 +19,7 @@ use uuid::Uuid;
 use crate::domain::account::{Account, AccountId, AccountStatus, AccountType};
 use crate::domain::journal::{EntryLeg, JournalEntry};
 use crate::domain::money::{Currency, Money};
+use crate::extensions::{AccountExt, HashChainExt, JournalExt};
 use crate::log::hash_chain::HashChain;
 use crate::service::ledger_service::LedgerService;
 use crate::service::resilience::{CircuitBreaker, GoldenSignals, TokenBucket};
@@ -218,6 +219,15 @@ pub fn build_router() -> Router {
         .route("/journal", get(list_journal))
         .route("/journal/verify", get(verify_chain))
         .route("/journal/proof/{index}", get(chain_proof))
+        .route("/journal/trial-balance", get(trial_balance))
+        .route("/journal/account/{id}", get(entries_for_account))
+        .route("/journal/validate", post(validate_entries))
+        // Audit trail
+        .route("/audit/report", get(audit_report))
+        .route("/audit/export", get(export_audit_log))
+        .route("/audit/redact/{index}", post(redact_block))
+        // Account extensions
+        .route("/accounts/{id}/snapshot", get(account_snapshot))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             rate_limit_middleware,
@@ -529,6 +539,129 @@ impl IntoResponse for AppError {
         };
         (status, Json(serde_json::json!({"error": message}))).into_response()
     }
+}
+
+// ━━━ Extension Handlers — Auditing, Redaction, Trial Balance ━━━
+
+/// Trial balance: returns (debits, credits) per account
+async fn trial_balance(
+    State(state): State<Arc<AppState>>,
+) -> Json<serde_json::Value> {
+    let journal = state.journal.read().unwrap();
+    let balances = JournalEntry::trial_balance(&journal);
+    
+    let result: serde_json::Map<String, serde_json::Value> = balances
+        .iter()
+        .map(|(id, (debits, credits))| {
+            (id.to_string(), serde_json::json!({
+                "debits": debits,
+                "credits": credits,
+                "net": debits - credits,
+            }))
+        })
+        .collect();
+
+    Json(serde_json::Value::Object(result))
+}
+
+/// Get all journal entries for a specific account
+async fn entries_for_account(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<Uuid>,
+) -> Result<Json<Vec<serde_json::Value>>, AppError> {
+    let journal = state.journal.read().unwrap();
+    let entries = JournalEntry::for_account(&journal, id);
+    
+    let result: Vec<serde_json::Value> = entries
+        .iter()
+        .map(|e| serde_json::json!({
+            "id": e.id,
+            "transaction_id": e.transaction_id,
+            "sequence_number": e.sequence_number,
+            "description": e.description,
+            "recorded_at": e.recorded_at.to_rfc3339(),
+            "legs": e.legs.iter().map(|l| serde_json::json!({
+                "account_id": l.account_id,
+                "side": format!("{:?}", l.side),
+                "amount_cents": l.amount_cents,
+            })).collect::<Vec<_>>(),
+        }))
+        .collect();
+
+    Ok(Json(result))
+}
+
+/// Validate all journal entries are balanced
+async fn validate_entries(
+    State(state): State<Arc<AppState>>,
+) -> Json<serde_json::Value> {
+    let journal = state.journal.read().unwrap();
+    let (valid, invalid_ids) = JournalEntry::validate_all(&journal);
+
+    Json(serde_json::json!({
+        "valid": valid,
+        "total_entries": journal.len(),
+        "invalid_entry_ids": invalid_ids,
+    }))
+}
+
+/// Generate audit report for a time range
+async fn audit_report(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Result<String, AppError> {
+    let from = params.get("from")
+        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+        .map(|dt| dt.with_timezone(&chrono::Utc))
+        .unwrap_or_else(|| chrono::Utc::now() - chrono::Duration::hours(24));
+    
+    let to = params.get("to")
+        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+        .map(|dt| dt.with_timezone(&chrono::Utc))
+        .unwrap_or_else(chrono::Utc::now);
+
+    let chain = state.hash_chain.lock().unwrap();
+    let report = chain.audit_report(from, to);
+    Ok(report)
+}
+
+/// Export full audit log as JSON
+async fn export_audit_log(
+    State(state): State<Arc<AppState>>,
+) -> Json<serde_json::Value> {
+    let chain = state.hash_chain.lock().unwrap();
+    let log = chain.export_audit_log();
+    Json(serde_json::json!({
+        "chain_length": chain.len(),
+        "blocks": log,
+    }))
+}
+
+/// Redact a block at the given index (GDPR/privacy compliance)
+async fn redact_block(
+    State(state): State<Arc<AppState>>,
+    Path(index): Path<u64>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let mut chain = state.hash_chain.lock().unwrap();
+    let new_head = chain.redact_block(index)
+        .map_err(|e| AppError::BadRequest(e))?;
+
+    Ok(Json(serde_json::json!({
+        "redacted_index": index,
+        "new_chain_head": new_head,
+        "chain_length": chain.len(),
+    })))
+}
+
+/// Account snapshot with extended info
+async fn account_snapshot(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<Uuid>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let accounts = state.accounts.read().unwrap();
+    let account = accounts.get(&id).ok_or(AppError::NotFound)?;
+    let currency = resolve_currency(&account.currency);
+    Ok(Json(account.snapshot(&currency)))
 }
 
 // ━━━ Server Launcher ━━━
