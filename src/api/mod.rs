@@ -47,6 +47,17 @@ pub struct AppState {
 impl AppState {
     pub fn new() -> Self {
         let signing_key = b"banking-ledger-hmac-key-v1-32b";
+        let mut rbac = RbacEngine::new();
+
+        // Bootstrap: pre-seed default admin subject from env or well-known UUID.
+        // In production, this comes from config. For now, UUID namespace for "admin".
+        let default_admin = SubjectId(Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap());
+        rbac.bind(default_admin, crate::rbac::Role::Admin);
+
+        // Default auditor (read-only audit access)
+        let default_auditor = SubjectId(Uuid::parse_str("00000000-0000-0000-0000-000000000002").unwrap());
+        rbac.bind(default_auditor, crate::rbac::Role::Auditor);
+
         Self {
             accounts: RwLock::new(HashMap::new()),
             ledger: RwLock::new(None),
@@ -56,7 +67,7 @@ impl AppState {
             hash_chain: Mutex::new(HashChain::new(signing_key)),
             journal: RwLock::new(Vec::new()),
             journal_seq: Mutex::new(0),
-            rbac: RwLock::new(RbacEngine::new()),
+            rbac: RwLock::new(rbac),
         }
     }
 }
