@@ -5,7 +5,7 @@
 //! - `domain` — pure domain models (zero I/O, fully testable)
 //! - `service` — business logic with concurrency control
 //! - `log` — immutable append-only event store
-//! - `store` — optional `SurrealDB` persistence
+//! - `store` — SurrealDB persistence (via Docker)
 //! - `api` — Axum REST server
 //!
 //! # Design Philosophy
@@ -19,9 +19,8 @@
 //! # Quick Start
 //!
 //! ```bash
-//! cargo run          # Start API server on :3001
-//! cargo test         # 118 tests
-//! python3 test_api.py # 19 integration tests
+//! docker compose up -d    # SurrealDB + API
+//! cargo test              # 176 tests
 //! ```
 
 #![deny(rust_2018_idioms)]
@@ -29,6 +28,8 @@
 #![warn(clippy::all)]
 #![warn(clippy::pedantic)]
 #![allow(clippy::module_name_repetitions)]
+
+use std::sync::Arc;
 
 mod api;
 mod domain;
@@ -51,9 +52,38 @@ mod deep_correctness_tests;
 async fn main() {
     println!("═══════════════════════════════════════════");
     println!("  BANKING LEDGER — Rust Core");
-    println!("  API server starting...");
-    println!("═══════════════════════════════════════════\n");
+    println!("═══════════════════════════════════════════");
+
+    // Attempt SurrealDB connection if configured
+    let surreal_url = std::env::var("SURREAL_URL").unwrap_or_default();
+    let surreal_store = if !surreal_url.is_empty() {
+        let user = std::env::var("SURREAL_USER").unwrap_or_else(|_| "root".into());
+        let pass = std::env::var("SURREAL_PASS").unwrap_or_else(|_| "root".into());
+        let ns = std::env::var("SURREAL_NS").unwrap_or_else(|_| "banking_ledger".into());
+        let db = std::env::var("SURREAL_DB").unwrap_or_else(|_| "ledger".into());
+
+        println!("  Connecting to SurrealDB: {surreal_url}");
+        match store::SurrealStore::connect(&surreal_url, &ns, &db, &user, &pass).await {
+            Ok(store) => {
+                println!("  SurrealDB connected: {ns}/{db}");
+                Some(store)
+            }
+            Err(e) => {
+                eprintln!("  ⚠ SurrealDB unavailable: {e}");
+                eprintln!("  Running in-memory mode (data lost on restart)");
+                None
+            }
+        }
+    } else {
+        println!("  No SURREAL_URL set — in-memory mode");
+        None
+    };
 
     // Run the API server
-    api::serve(3001).await.unwrap();
+    let port: u16 = std::env::var("API_PORT")
+        .unwrap_or_else(|_| "3001".into())
+        .parse()
+        .unwrap_or(3001);
+
+    api::serve(port, surreal_store.map(Arc::new)).await.unwrap();
 }

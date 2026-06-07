@@ -1,0 +1,49 @@
+# Banking Ledger — full stack with SurrealDB
+# Single command: docker compose up -d
+
+services:
+  surrealdb:
+    image: surrealdb/surrealdb:latest
+    container_name: banking-ledger-db
+    ports:
+      - "${SURREAL_HOST_PORT:-4321}:8000"
+    volumes:
+      - surrealdb_data:/data
+      - ./.surreal/schema.surql:/docker-entrypoint-initdb.d/01-schema.surql:ro
+    command:
+      - start
+      - --log
+      - info
+      - --user
+      - ${SURREAL_USER:-root}
+      - --pass
+      - ${SURREAL_PASS:-root}
+      - surrealkv:/data/ledger.db
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    restart: unless-stopped
+
+  banking-ledger:
+    build: .
+    container_name: banking-ledger-api
+    ports:
+      - "${API_PORT:-3001}:3001"
+    environment:
+      - SURREAL_URL=ws://surrealdb:8000/rpc
+      - SURREAL_NS=banking_ledger
+      - SURREAL_DB=ledger
+      - SURREAL_USER=${SURREAL_USER:-root}
+      - SURREAL_PASS=${SURREAL_PASS:-root}
+      - API_PORT=3001
+    depends_on:
+      surrealdb:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  surrealdb_data:
+    driver: local
