@@ -132,6 +132,13 @@ impl IdentityService {
     pub fn all_parties(&self) -> Vec<Party> {
         self.parties.read().unwrap().values().cloned().collect()
     }
+
+    /// Iterate all parties (avoids allocation)
+    pub fn for_each_party(&self, mut f: impl FnMut(&Party)) {
+        for party in self.parties.read().unwrap().values() {
+            f(party);
+        }
+    }
 }
 
 impl Default for IdentityService {
