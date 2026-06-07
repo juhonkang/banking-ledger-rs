@@ -2,7 +2,7 @@
 
 > **⚠️ Educational Purpose Only**
 >
-> This project is a **learning exercise** — a portfolio piece demonstrating production-grade
+> This project is a **a daily learning exercise of mine** — a portfolio piece demonstrating production-grade
 > Rust engineering, financial domain modeling, and cryptographic audit trails. It is NOT
 > intended for commercial use, real-world banking, or production financial systems.
 > No liability is assumed; use at your own risk.
