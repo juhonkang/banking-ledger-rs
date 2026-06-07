@@ -25,6 +25,8 @@ use crate::rbac::{extract_subject, Permission, RbacEngine, RbacExt, SubjectId};
 use crate::service::ledger_service::LedgerService;
 use crate::service::resilience::{CircuitBreaker, GoldenSignals, TokenBucket};
 
+use crate::store::SurrealStore;
+
 // ━━━ Shared Application State ━━━
 
 pub struct AppState {
@@ -42,10 +44,12 @@ pub struct AppState {
     pub journal_seq: Mutex<u64>,
     /// RBAC engine — role-based access control
     pub rbac: RwLock<RbacEngine>,
+    /// SurrealDB persistence (None if in-memory mode)
+    pub store: Option<Arc<SurrealStore>>,
 }
 
 impl AppState {
-    pub fn new() -> Self {
+    pub fn new(store: Option<Arc<SurrealStore>>) -> Self {
         let signing_key = b"banking-ledger-hmac-key-v1-32b";
         let mut rbac = RbacEngine::new();
 
@@ -68,6 +72,7 @@ impl AppState {
             journal: RwLock::new(Vec::new()),
             journal_seq: Mutex::new(0),
             rbac: RwLock::new(rbac),
+            store,
         }
     }
 }
@@ -214,8 +219,8 @@ async fn rate_limit_middleware(
 }
 
 /// Build the full router
-pub fn build_router() -> Router {
-    let state = Arc::new(AppState::new());
+pub fn build_router(store: Option<Arc<SurrealStore>>) -> Router {
+    let state = Arc::new(AppState::new(store));
 
     Router::new()
         // Health
@@ -842,8 +847,8 @@ async fn rbac_matrix(
 // ━━━ Server Launcher ━━━
 
 /// Start the REST API server on the given port.
-pub async fn serve(port: u16) -> std::io::Result<()> {
-    let app = build_router();
+pub async fn serve(port: u16, store: Option<Arc<SurrealStore>>) -> std::io::Result<()> {
+    let app = build_router(store);
     let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
     println!("\u{1f3e6} Banking Ledger API listening on http://{addr}");
     println!("   POST /accounts           — Create account");
