@@ -14,4 +14,6 @@ mod ledger_service_test;
 #[cfg(feature = "full")]
 pub mod production;
 pub mod resilience;
+#[cfg(test)]
+mod resilience_edge_tests;
 pub mod saga;
