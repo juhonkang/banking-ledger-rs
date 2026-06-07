@@ -17,8 +17,10 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::domain::account::{Account, AccountId, AccountStatus, AccountType};
+use crate::domain::coa::CoaCategory;
 use crate::domain::journal::{EntryLeg, JournalEntry};
 use crate::domain::money::{Currency, Money};
+use crate::domain::party::{Party, PartyStatus, PartyType};
 use crate::extensions::{AccountExt, HashChainExt, JournalExt};
 use crate::log::hash_chain::HashChain;
 use crate::rbac::{extract_subject, Permission, RbacEngine, RbacExt, SubjectId};
@@ -46,6 +48,8 @@ pub struct AppState {
     pub rbac: RwLock<RbacEngine>,
     /// SurrealDB persistence (None if in-memory mode)
     pub store: Option<Arc<SurrealStore>>,
+    /// Party registry (identity management)
+    pub parties: RwLock<HashMap<uuid::Uuid, Party>>,
 }
 
 impl AppState {
@@ -73,6 +77,7 @@ impl AppState {
             journal_seq: Mutex::new(0),
             rbac: RwLock::new(rbac),
             store,
+            parties: RwLock::new(HashMap::new()),
         }
     }
 
@@ -281,6 +286,12 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/audit/redact/{index}", post(redact_block))
         // Account extensions
         .route("/accounts/{id}/snapshot", get(account_snapshot))
+        // Party management
+        .route("/parties", post(create_party))
+        .route("/parties", get(list_parties))
+        .route("/parties/{id}", get(get_party))
+        // Chart of Accounts
+        .route("/coa", get(coa_summary))
         // RBAC management
         .route("/rbac/permissions", get(list_rbac_permissions))
         .route("/rbac/bind", post(bind_role))
@@ -915,6 +926,79 @@ async fn rbac_matrix(
 
     let rbac = state.rbac.read().unwrap();
     Ok(rbac.permission_matrix())
+}
+
+// ━━━ Party Handlers ━━━
+
+#[derive(Deserialize)]
+struct CreatePartyRequest {
+    party_type: String,
+    legal_name: String,
+}
+
+async fn create_party(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<CreatePartyRequest>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let ptype = match req.party_type.to_lowercase().as_str() {
+        "individual" => PartyType::Individual,
+        "corporation" => PartyType::Corporation,
+        "trust" => PartyType::Trust,
+        "government" => PartyType::GovernmentAgency,
+        "financial" => PartyType::FinancialInstitution,
+        other => PartyType::Other(other.to_string()),
+    };
+    let party = Party::new(ptype, req.legal_name);
+    let id = party.id;
+    state.parties.write().unwrap().insert(id, party);
+
+    Ok(Json(serde_json::json!({
+        "id": id,
+        "status": "Active",
+    })))
+}
+
+async fn list_parties(
+    State(state): State<Arc<AppState>>,
+) -> Json<serde_json::Value> {
+    let guard = state.parties.read().unwrap();
+    let parties: Vec<_> = guard.values().map(|p| serde_json::json!({
+        "id": p.id,
+        "legal_name": p.legal_name,
+        "party_type": format!("{:?}", p.party_type),
+        "status": format!("{:?}", p.status),
+        "created_at": p.created_at.to_rfc3339(),
+    })).collect();
+    Json(serde_json::json!({ "parties": parties, "count": guard.len() }))
+}
+
+async fn get_party(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<uuid::Uuid>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let guard = state.parties.read().unwrap();
+    let party = guard.get(&id).ok_or(AppError::NotFound)?;
+    Ok(Json(serde_json::json!({
+        "id": party.id,
+        "legal_name": party.legal_name,
+        "party_type": format!("{:?}", party.party_type),
+        "status": format!("{:?}", party.status),
+        "created_at": party.created_at.to_rfc3339(),
+    })))
+}
+
+// ━━━ COA Handler ━━━
+
+async fn coa_summary() -> Json<serde_json::Value> {
+    Json(serde_json::json!({
+        "chart_of_accounts": [
+            {"category": "Asset",       "normal_balance": "Debit",  "examples": ["Cash", "Accounts Receivable", "Inventory"]},
+            {"category": "Liability",    "normal_balance": "Credit", "examples": ["Accounts Payable", "Loans Payable", "Accrued Expenses"]},
+            {"category": "Equity",       "normal_balance": "Credit", "examples": ["Common Stock", "Retained Earnings", "Capital"]},
+            {"category": "Revenue",      "normal_balance": "Credit", "examples": ["Sales Revenue", "Interest Income", "Fee Income"]},
+            {"category": "Expense",      "normal_balance": "Debit",  "examples": ["Salaries", "Rent", "Utilities", "Depreciation"]},
+        ]
+    }))
 }
 
 // ━━━ Server Launcher ━━━
