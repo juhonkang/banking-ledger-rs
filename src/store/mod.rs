@@ -50,21 +50,36 @@ impl SurrealStore {
 
     /// Save an account (upsert).
     pub async fn save_account(&self, account: &Account) -> Result<(), String> {
-        let id = account.id.to_string();
-        let atype = format!("{:?}", account.account_type);
-        let status = format!("{:?}", account.status());
+        self.save_account_raw(
+            &account.id.to_string(),
+            &format!("{:?}", account.account_type),
+            &account.currency,
+            account.balance_cents(),
+            account.available_balance_cents(),
+            &format!("{:?}", account.status()),
+        )
+        .await
+    }
+
+    /// Save an account from raw field values (no Account struct needed).
+    pub async fn save_account_raw(
+        &self,
+        id: &str,
+        atype: &str,
+        currency: &str,
+        balance_cents: i64,
+        hold_cents: i64,
+        status: &str,
+    ) -> Result<(), String> {
         let sql = format!(
             "UPSERT account:{id} CONTENT {{ \
                 account_type: '{atype}', \
-                currency: '{}', \
-                balance_cents: {}, \
-                hold_cents: {}, \
+                currency: '{currency}', \
+                balance_cents: {balance_cents}, \
+                hold_cents: {hold_cents}, \
                 status: '{status}', \
                 updated_at: time::now() \
-            }}",
-            account.currency,
-            account.balance_cents(),
-            account.available_balance_cents(),
+            }}"
         );
 
         self.db

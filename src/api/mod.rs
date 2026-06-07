@@ -263,6 +263,40 @@ pub fn build_router(store: Option<Arc<SurrealStore>>) -> Router {
 
 // ━━━ Handlers ━━━
 
+/// Fire-and-forget persistence after mutation.
+/// Spawns a background task so the API response is never blocked by DB I/O.
+fn persist_after_mutation(state: &Arc<AppState>) {
+    if let Some(ref store) = state.store {
+        let store = store.clone();
+        // Extract all data upfront (drop all guards before tokio::spawn)
+        let account_data: Vec<(uuid::Uuid, String, String, i64, i64, String)> = {
+            let guard = state.accounts.read().unwrap();
+            guard.iter().map(|(id, acc)| {
+                (*id, format!("{:?}", acc.account_type), acc.currency.clone(),
+                 acc.balance_cents(), acc.available_balance_cents(), format!("{:?}", acc.status()))
+            }).collect()
+        };
+        let journal_clone: Vec<JournalEntry> = state.journal.read().unwrap().clone();
+        let chain_blocks = {
+            let guard = state.hash_chain.lock().unwrap();
+            guard.blocks.clone()
+        };
+        // All guards dropped here — no references escape to tokio::spawn
+
+        tokio::spawn(async move {
+            for (id, atype, currency, balance, hold, status) in &account_data {
+                let _ = store.save_account_raw(&id.to_string(), atype, currency, *balance, *hold, status).await;
+            }
+            for entry in journal_clone.iter().rev().take(10) {
+                let _ = store.save_journal_entry(entry).await;
+            }
+            let mut chain = crate::log::hash_chain::HashChain::new(b"banking-ledger-hmac-key-v1-32b");
+            chain.blocks = chain_blocks;
+            let _ = store.save_hash_chain(&chain).await;
+        });
+    }
+}
+
 async fn health_handler(State(state): State<Arc<AppState>>) -> Json<HealthResponse> {
     Json(HealthResponse {
         status: "healthy".into(),
@@ -300,6 +334,7 @@ async fn create_account(
     state.metrics.record_request(start.elapsed(), false);
     state.circuit_breaker.record_success();
 
+    persist_after_mutation(&state);
     Ok(Json(response))
 }
 
@@ -335,6 +370,7 @@ async fn debit_account(
     let response = AccountResponse::from_account(account, &currency);
     state.metrics.record_request(start.elapsed(), false);
 
+    persist_after_mutation(&state);
     Ok(Json(response))
 }
 
@@ -356,6 +392,7 @@ async fn credit_account(
     let response = AccountResponse::from_account(account, &currency);
     state.metrics.record_request(start.elapsed(), false);
 
+    persist_after_mutation(&state);
     Ok(Json(response))
 }
 
@@ -377,6 +414,7 @@ async fn set_account_status(
     account.set_status(new_status);
     let currency = resolve_currency(&account.currency);
 
+    persist_after_mutation(&state);
     Ok(Json(AccountResponse::from_account(account, &currency)))
 }
 
@@ -463,6 +501,7 @@ async fn transfer(
     state.metrics.record_request(start.elapsed(), false);
     state.circuit_breaker.record_success();
 
+    persist_after_mutation(&state);
     Ok(Json(response))
 }
 
@@ -672,6 +711,7 @@ async fn redact_block(
     let new_head = chain.redact_block(index)
         .map_err(|e| AppError::BadRequest(e))?;
 
+    persist_after_mutation(&state);
     Ok(Json(serde_json::json!({
         "redacted_index": index,
         "new_chain_head": new_head,
