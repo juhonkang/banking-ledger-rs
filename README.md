@@ -1,5 +1,12 @@
 # Banking Ledger — Rust
 
+> **⚠️ Educational Purpose Only**
+>
+> This project is a **learning exercise** — a portfolio piece demonstrating production-grade
+> Rust engineering, financial domain modeling, and cryptographic audit trails. It is NOT
+> intended for commercial use, real-world banking, or production financial systems.
+> No liability is assumed; use at your own risk.
+
 [![Rust](https://img.shields.io/badge/rust-1.89+-orange)](https://rust-lang.org)
 [![Tests](https://img.shields.io/badge/tests-168%20passed-brightgreen)](https://github.com/quincy/banking-ledger-rs/actions)
 [![CI/CD](https://img.shields.io/badge/CI-GitHub%20Actions-blue)](https://github.com/quincy/banking-ledger-rs/actions)

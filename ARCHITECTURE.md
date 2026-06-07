@@ -1,5 +1,7 @@
 # Banking Ledger — Rust Architecture
 
+> **⚠️ Educational Purpose Only.** This is a learning portfolio, not a commercial product.
+
 > High-throughput financial ledger core. 100M RPS ready. Immutable. Double-entry. Hash-chain verified.
 
 ## Table of Contents
