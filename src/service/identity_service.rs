@@ -127,6 +127,11 @@ impl IdentityService {
     pub fn get_party(&self, party_id: PartyId) -> Option<Party> {
         self.parties.read().unwrap().get(&party_id).cloned()
     }
+
+    /// Get all parties
+    pub fn all_parties(&self) -> Vec<Party> {
+        self.parties.read().unwrap().values().cloned().collect()
+    }
 }
 
 impl Default for IdentityService {

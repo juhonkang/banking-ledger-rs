@@ -18,14 +18,17 @@ use uuid::Uuid;
 
 use crate::domain::account::{Account, AccountId, AccountStatus, AccountType};
 use crate::domain::coa::CoaCategory;
+use crate::domain::identifier::{IdentifierType};
 use crate::domain::journal::{EntryLeg, JournalEntry};
 use crate::domain::money::{Currency, Money};
 use crate::domain::party::{Party, PartyStatus, PartyType};
 use crate::extensions::{AccountExt, HashChainExt, JournalExt};
 use crate::log::hash_chain::HashChain;
 use crate::rbac::{extract_subject, Permission, RbacEngine, RbacExt, SubjectId};
+use crate::service::identity_service::IdentityService;
 use crate::service::ledger_service::LedgerService;
 use crate::service::resilience::{CircuitBreaker, GoldenSignals, TokenBucket};
+use crate::service::saga::SagaOrchestrator;
 
 use crate::store::SurrealStore;
 
@@ -48,8 +51,10 @@ pub struct AppState {
     pub rbac: RwLock<RbacEngine>,
     /// SurrealDB persistence (None if in-memory mode)
     pub store: Option<Arc<SurrealStore>>,
-    /// Party registry (identity management)
-    pub parties: RwLock<HashMap<uuid::Uuid, Party>>,
+    /// Identity management (Party + Identifier lifecycle)
+    pub identity_service: RwLock<IdentityService>,
+    /// Saga orchestrator for long-lived transactions
+    pub saga_service: RwLock<SagaOrchestrator>,
 }
 
 impl AppState {
@@ -77,7 +82,8 @@ impl AppState {
             journal_seq: Mutex::new(0),
             rbac: RwLock::new(rbac),
             store,
-            parties: RwLock::new(HashMap::new()),
+            identity_service: RwLock::new(IdentityService::new()),
+            saga_service: RwLock::new(SagaOrchestrator::new()),
         }
     }
 
@@ -86,7 +92,7 @@ impl AppState {
     pub async fn restore_from_store(&self) {
         let Some(ref store) = self.store else { return };
 
-        // Load accounts
+        // Load accounts (restored directly into accounts HashMap)
         match store.load_all_accounts().await {
             Ok(accounts) => {
                 let count = accounts.len();
@@ -290,6 +296,10 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/parties", post(create_party))
         .route("/parties", get(list_parties))
         .route("/parties/{id}", get(get_party))
+        .route("/parties/{id}/identifiers", post(add_identifier))
+        .route("/parties/{id}/identifiers", get(list_identifiers))
+        // Saga management
+        .route("/sagas/{id}", get(get_saga_status))
         // Chart of Accounts
         .route("/coa", get(coa_summary))
         // RBAC management
@@ -948,12 +958,11 @@ async fn create_party(
         "financial" => PartyType::FinancialInstitution,
         other => PartyType::Other(other.to_string()),
     };
-    let party = Party::new(ptype, req.legal_name);
-    let id = party.id;
-    state.parties.write().unwrap().insert(id, party);
+    let mut svc = state.identity_service.write().unwrap();
+    let party = svc.create_party(ptype, &req.legal_name);
 
     Ok(Json(serde_json::json!({
-        "id": id,
+        "id": party.id,
         "status": "Active",
     })))
 }
@@ -961,23 +970,23 @@ async fn create_party(
 async fn list_parties(
     State(state): State<Arc<AppState>>,
 ) -> Json<serde_json::Value> {
-    let guard = state.parties.read().unwrap();
-    let parties: Vec<_> = guard.values().map(|p| serde_json::json!({
+    let svc = state.identity_service.read().unwrap();
+    let parties: Vec<_> = svc.all_parties().iter().map(|p| serde_json::json!({
         "id": p.id,
         "legal_name": p.legal_name,
         "party_type": format!("{:?}", p.party_type),
         "status": format!("{:?}", p.status),
         "created_at": p.created_at.to_rfc3339(),
     })).collect();
-    Json(serde_json::json!({ "parties": parties, "count": guard.len() }))
+    Json(serde_json::json!({ "parties": parties, "count": parties.len() }))
 }
 
 async fn get_party(
     State(state): State<Arc<AppState>>,
     Path(id): Path<uuid::Uuid>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let guard = state.parties.read().unwrap();
-    let party = guard.get(&id).ok_or(AppError::NotFound)?;
+    let svc = state.identity_service.read().unwrap();
+    let party = svc.get_party(id).ok_or(AppError::NotFound)?;
     Ok(Json(serde_json::json!({
         "id": party.id,
         "legal_name": party.legal_name,
@@ -985,6 +994,80 @@ async fn get_party(
         "status": format!("{:?}", party.status),
         "created_at": party.created_at.to_rfc3339(),
     })))
+}
+
+// ━━━ Identifier Handlers ━━━
+
+#[derive(Deserialize)]
+struct AddIdentifierRequest {
+    identifier_type: String,
+    value: String,
+    issuing_country: Option<String>,
+}
+
+async fn add_identifier(
+    State(state): State<Arc<AppState>>,
+    Path(party_id): Path<uuid::Uuid>,
+    Json(req): Json<AddIdentifierRequest>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let id_type = match req.identifier_type.to_lowercase().as_str() {
+        "national_id" => IdentifierType::NationalId,
+        "passport" => IdentifierType::PassportNumber,
+        "drivers_license" => IdentifierType::DriversLicense,
+        "tax_id" => IdentifierType::TaxIdentificationNumber,
+        "business_reg" => IdentifierType::BusinessRegistrationNumber,
+        "email" => IdentifierType::Email,
+        "phone" => IdentifierType::Phone,
+        other => IdentifierType::Other(other.to_string()),
+    };
+
+    let mut svc = state.identity_service.write().unwrap();
+    let identifier = svc
+        .add_identifier(party_id, id_type, &req.value, req.issuing_country.as_deref())
+        .map_err(|e| AppError::BadRequest(e.to_string()))?;
+
+    Ok(Json(serde_json::json!({
+        "id": identifier.id,
+        "party_id": identifier.party_id,
+        "identifier_type": format!("{:?}", identifier.identifier_type),
+        "status": format!("{:?}", identifier.status),
+    })))
+}
+
+async fn list_identifiers(
+    State(state): State<Arc<AppState>>,
+    Path(party_id): Path<uuid::Uuid>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let svc = state.identity_service.read().unwrap();
+    let identifiers = svc.get_active_identifiers(party_id);
+    let result: Vec<_> = identifiers.iter().map(|i| serde_json::json!({
+        "id": i.id,
+        "party_id": i.party_id,
+        "identifier_type": format!("{:?}", i.identifier_type),
+        "value": i.value,
+        "status": format!("{:?}", i.status),
+        "issuing_country": i.issuing_country,
+        "effective_from": i.effective_from.to_rfc3339(),
+        "effective_to": i.effective_to.map(|t| t.to_rfc3339()),
+    })).collect();
+    Ok(Json(serde_json::json!({ "identifiers": result, "count": result.len() })))
+}
+
+// ━━━ Saga Handlers ━━━
+
+async fn get_saga_status(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<uuid::Uuid>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let svc = state.saga_service.read().unwrap();
+    let status = svc.get_status(id);
+    match status {
+        Some(s) => Ok(Json(serde_json::json!({
+            "saga_id": id.to_string(),
+            "status": format!("{:?}", s),
+        }))),
+        None => Err(AppError::NotFound),
+    }
 }
 
 // ━━━ COA Handler ━━━
