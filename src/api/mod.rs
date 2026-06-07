@@ -75,6 +75,41 @@ impl AppState {
             store,
         }
     }
+
+    /// Restore state from SurrealDB on startup.
+    /// Called after store connection is established.
+    pub async fn restore_from_store(&self) {
+        let Some(ref store) = self.store else { return };
+
+        // Load accounts
+        match store.load_all_accounts().await {
+            Ok(accounts) => {
+                let count = accounts.len();
+                let mut guard = self.accounts.write().unwrap();
+                for acc in accounts {
+                    guard.insert(acc.id, acc);
+                }
+                if count > 0 {
+                    eprintln!("  Restored {count} accounts from SurrealDB");
+                }
+            }
+            Err(e) => eprintln!("  ⚠ Failed to load accounts: {e}"),
+        }
+
+        // Load hash chain
+        match store.load_hash_chain(b"banking-ledger-hmac-key-v1-32b").await {
+            Ok(chain) => {
+                let block_count = chain.blocks.len();
+                if block_count > 1 {
+                    // More than just genesis
+                    let mut guard = self.hash_chain.lock().unwrap();
+                    *guard = chain;
+                    eprintln!("  Restored hash chain: {block_count} blocks");
+                }
+            }
+            Err(e) => eprintln!("  ⚠ Failed to load hash chain: {e}"),
+        }
+    }
 }
 
 // ━━━ Currency Helpers ━━━
@@ -219,9 +254,7 @@ async fn rate_limit_middleware(
 }
 
 /// Build the full router
-pub fn build_router(store: Option<Arc<SurrealStore>>) -> Router {
-    let state = Arc::new(AppState::new(store));
-
+pub fn build_router(state: Arc<AppState>) -> Router {
     Router::new()
         // Health
         .route("/health", get(health_handler))
@@ -888,7 +921,9 @@ async fn rbac_matrix(
 
 /// Start the REST API server on the given port.
 pub async fn serve(port: u16, store: Option<Arc<SurrealStore>>) -> std::io::Result<()> {
-    let app = build_router(store);
+    let state = Arc::new(AppState::new(store));
+    state.restore_from_store().await;
+    let app = build_router(state.clone());
     let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
     println!("\u{1f3e6} Banking Ledger API listening on http://{addr}");
     println!("   POST /accounts           — Create account");

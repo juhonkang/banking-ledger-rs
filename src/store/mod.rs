@@ -197,6 +197,56 @@ impl SurrealStore {
     pub async fn health_check(&self) -> bool {
         self.db.query("SELECT 1").await.is_ok()
     }
+
+    /// Load the hash chain from SurrealDB.
+    /// Returns a HashChain rebuilt from stored blocks, or a fresh chain if empty.
+    pub async fn load_hash_chain(&self, signing_key: &[u8]) -> Result<HashChain, String> {
+        let mut result = self
+            .db
+            .query("SELECT * FROM hash_block ORDER BY index_pos ASC")
+            .await
+            .map_err(|e| format!("load_hash_chain: {e}"))?;
+
+        let raw: Vec<serde_json::Value> = result
+            .take::<Vec<serde_json::Value>>(0)
+            .map_err(|e| format!("load_hash_chain parse: {e}"))?;
+
+        let mut chain = HashChain::new(signing_key);
+        // Skip genesis (index 0) — HashChain::new already creates it
+        let mut blocks: Vec<crate::log::hash_chain::HashLink> = Vec::new();
+
+        for row in &raw {
+            let idx = row["index_pos"].as_u64().unwrap_or(0);
+            if idx == 0 {
+                continue; // use the genesis from HashChain::new()
+            }
+            let hash = row["hash"].as_str().unwrap_or("").to_string();
+            let prev = row["previous_hash"].as_str().unwrap_or("").to_string();
+            let data = row["data"].as_str().unwrap_or("").to_string();
+            let ts = row["timestamp"].as_str().unwrap_or("");
+            let nonce = row["nonce"].as_u64().unwrap_or(0) as u64;
+            let timestamp = chrono::DateTime::parse_from_rfc3339(ts)
+                .map(|dt| dt.with_timezone(&chrono::Utc))
+                .unwrap_or_else(|_| chrono::Utc::now());
+
+            blocks.push(crate::log::hash_chain::HashLink {
+                index: idx,
+                hash,
+                previous_hash: prev,
+                data,
+                timestamp,
+                nonce,
+            });
+        }
+
+        // Replace chain blocks with loaded ones (keep genesis from new())
+        if !blocks.is_empty() {
+            // Genesis is already at blocks[0], append the rest
+            chain.blocks.extend(blocks);
+        }
+
+        Ok(chain)
+    }
 }
 
 /// Persist state after every mutation (fire-and-forget for now).
