@@ -21,6 +21,7 @@ use crate::domain::journal::{EntryLeg, JournalEntry};
 use crate::domain::money::{Currency, Money};
 use crate::extensions::{AccountExt, HashChainExt, JournalExt};
 use crate::log::hash_chain::HashChain;
+use crate::rbac::{extract_subject, Permission, RbacEngine, RbacExt, SubjectId};
 use crate::service::ledger_service::LedgerService;
 use crate::service::resilience::{CircuitBreaker, GoldenSignals, TokenBucket};
 
@@ -39,6 +40,8 @@ pub struct AppState {
     pub journal: RwLock<Vec<JournalEntry>>,
     /// Monotonically increasing sequence counter for journal entries
     pub journal_seq: Mutex<u64>,
+    /// RBAC engine — role-based access control
+    pub rbac: RwLock<RbacEngine>,
 }
 
 impl AppState {
@@ -53,6 +56,7 @@ impl AppState {
             hash_chain: Mutex::new(HashChain::new(signing_key)),
             journal: RwLock::new(Vec::new()),
             journal_seq: Mutex::new(0),
+            rbac: RwLock::new(RbacEngine::new()),
         }
     }
 }
@@ -228,6 +232,12 @@ pub fn build_router() -> Router {
         .route("/audit/redact/{index}", post(redact_block))
         // Account extensions
         .route("/accounts/{id}/snapshot", get(account_snapshot))
+        // RBAC management
+        .route("/rbac/permissions", get(list_rbac_permissions))
+        .route("/rbac/bind", post(bind_role))
+        .route("/rbac/subject/{id}", get(get_subject_roles))
+        .route("/rbac/audit", get(rbac_audit_export))
+        .route("/rbac/matrix", get(rbac_matrix))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             rate_limit_middleware,
@@ -662,6 +672,160 @@ async fn account_snapshot(
     let account = accounts.get(&id).ok_or(AppError::NotFound)?;
     let currency = resolve_currency(&account.currency);
     Ok(Json(account.snapshot(&currency)))
+}
+
+// ━━━ RBAC Handlers ━━━
+
+/// Middleware: require a specific permission to access an endpoint.
+async fn require_permission(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    permission: Permission,
+) -> Result<SubjectId, (StatusCode, Json<serde_json::Value>)> {
+    let subject = extract_subject(&headers).ok_or_else(|| {
+        (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({"error": "Missing or invalid X-Subject-Id header"})),
+        )
+    })?;
+
+    let rbac = state.rbac.read().unwrap();
+    if rbac.can(&subject, permission) {
+        Ok(subject)
+    } else {
+        Err((
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({
+                "error": "Permission denied",
+                "required": format!("{:?}", permission),
+                "subject": subject.0.to_string(),
+                "roles": rbac.roles_for(&subject).iter().map(|r| format!("{:?}", r)).collect::<Vec<_>>(),
+            })),
+        ))
+    }
+}
+
+/// List all available permissions with their descriptions.
+async fn list_rbac_permissions(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    let subject = require_permission(State(state.clone()), headers, Permission::ManageRoles).await?;
+
+    let perms = vec![
+        ("read_any_account", "View any account details and balance"),
+        ("read_own_account", "View own account details only"),
+        ("create_account", "Create new accounts"),
+        ("update_account_status", "Freeze/unfreeze/close accounts"),
+        ("close_account", "Permanently close an account"),
+        ("initiate_transfer", "Create transfers between any accounts"),
+        ("initiate_own_transfer", "Transfer from own accounts only"),
+        ("view_any_transaction", "View all transactions"),
+        ("view_own_transaction", "View own transactions only"),
+        ("view_audit_log", "Access audit trail and hash chain"),
+        ("verify_chain_integrity", "Run hash chain verification"),
+        ("export_audit_report", "Download audit report"),
+        ("view_trial_balance", "View trial balance"),
+        ("manage_users", "Create/modify/delete subjects"),
+        ("manage_roles", "Bind/unbind roles to subjects"),
+        ("configure_limits", "Change rate limits, thresholds"),
+        ("view_system_metrics", "Access /admin/metrics"),
+        ("redact_pii", "Redact personally identifiable information"),
+        ("export_user_data", "GDPR data export"),
+        ("generate_sar_report", "Suspicious Activity Report"),
+    ];
+
+    Ok(Json(serde_json::json!({
+        "requested_by": subject.0.to_string(),
+        "permissions": perms.iter().map(|(code, desc)| {
+            serde_json::json!({"code": code, "description": desc})
+        }).collect::<Vec<_>>(),
+    })))
+}
+
+/// Bind a role to a subject.
+#[derive(Deserialize)]
+struct BindRoleRequest {
+    subject_id: Uuid,
+    role: String,
+}
+
+async fn bind_role(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(req): Json<BindRoleRequest>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    let _subject = require_permission(State(state.clone()), headers, Permission::ManageRoles).await?;
+
+    let role = match req.role.to_lowercase().as_str() {
+        "admin" => crate::rbac::Role::Admin,
+        "auditor" => crate::rbac::Role::Auditor,
+        "teller" => crate::rbac::Role::Teller,
+        "customer" => crate::rbac::Role::Customer,
+        "system" => crate::rbac::Role::System,
+        "compliance" => crate::rbac::Role::Compliance,
+        _ => return Err((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": format!("Unknown role: {}", req.role)})),
+        )),
+    };
+
+    let mut rbac = state.rbac.write().unwrap();
+    let subject = SubjectId(req.subject_id);
+    rbac.bind(subject.clone(), role);
+
+    Ok(Json(serde_json::json!({
+        "bound": true,
+        "subject": subject.0.to_string(),
+        "role": req.role,
+        "effective_permissions": rbac.permissions_for(&subject)
+            .iter()
+            .map(|p| format!("{:?}", p))
+            .collect::<Vec<_>>(),
+    })))
+}
+
+/// Get roles for a specific subject.
+async fn get_subject_roles(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    let _subject = require_permission(State(state.clone()), headers, Permission::ManageRoles).await?;
+
+    let rbac = state.rbac.read().unwrap();
+    let subject = SubjectId(id);
+    let roles = rbac.roles_for(&subject);
+    let perms = rbac.permissions_for(&subject);
+
+    Ok(Json(serde_json::json!({
+        "subject": id.to_string(),
+        "roles": roles.iter().map(|r| format!("{:?}", r)).collect::<Vec<_>>(),
+        "effective_permissions": perms.iter().map(|p| format!("{:?}", p)).collect::<Vec<_>>(),
+        "permission_count": perms.len(),
+    })))
+}
+
+/// Export full RBAC state for audit.
+async fn rbac_audit_export(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    let _subject = require_permission(State(state.clone()), headers, Permission::ViewAuditLog).await?;
+
+    let rbac = state.rbac.read().unwrap();
+    Ok(Json(rbac.export_audit()))
+}
+
+/// Display the permission matrix.
+async fn rbac_matrix(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<String, (StatusCode, Json<serde_json::Value>)> {
+    let _subject = require_permission(State(state.clone()), headers, Permission::ViewAuditLog).await?;
+
+    let rbac = state.rbac.read().unwrap();
+    Ok(rbac.permission_matrix())
 }
 
 // ━━━ Server Launcher ━━━

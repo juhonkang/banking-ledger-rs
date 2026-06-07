@@ -34,6 +34,7 @@ mod api;
 mod domain;
 mod extensions;
 mod log;
+mod rbac;
 mod service;
 mod store;
 
