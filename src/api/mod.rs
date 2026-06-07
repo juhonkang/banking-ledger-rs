@@ -277,6 +277,8 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/accounts/{id}/debit", post(debit_account))
         .route("/accounts/{id}/credit", post(credit_account))
         .route("/accounts/{id}/status", post(set_account_status))
+        .route("/accounts/{id}/hold", post(place_hold))
+        .route("/accounts/{id}/release", post(release_hold))
         // Transfers
         .route("/transfers", post(transfer))
         // Admin
@@ -300,6 +302,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/parties/{id}", get(get_party))
         .route("/parties/{id}/identifiers", post(add_identifier))
         .route("/parties/{id}/identifiers", get(list_identifiers))
+        .route("/identifiers/{id}/verify", post(verify_identifier))
         // Saga management
         .route("/sagas/{id}", get(get_saga_status))
         // Chart of Accounts
@@ -472,6 +475,49 @@ async fn set_account_status(
 
     persist_after_mutation(&state);
     Ok(Json(AccountResponse::from_account(&account, &currency)))
+}
+
+// ━━━ Hold/Release ━━━
+
+#[derive(Deserialize)]
+struct HoldRequest {
+    amount_cents: i64,
+}
+
+async fn place_hold(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<Uuid>,
+    Json(req): Json<HoldRequest>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    state.account_service
+        .place_hold(id, req.amount_cents)
+        .map_err(|e| AppError::BadRequest(format!("{e:?}")))?;
+
+    let account = state.account_service.get_account(id).ok_or(AppError::NotFound)?;
+    Ok(Json(serde_json::json!({
+        "id": id,
+        "balance_cents": account.balance_cents(),
+        "available_balance_cents": account.available_balance_cents(),
+        "hold_amount": req.amount_cents,
+    })))
+}
+
+async fn release_hold(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<Uuid>,
+    Json(req): Json<HoldRequest>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    state.account_service
+        .release_hold(id, req.amount_cents)
+        .map_err(|e| AppError::BadRequest(format!("{e:?}")))?;
+
+    let account = state.account_service.get_account(id).ok_or(AppError::NotFound)?;
+    Ok(Json(serde_json::json!({
+        "id": id,
+        "balance_cents": account.balance_cents(),
+        "available_balance_cents": account.available_balance_cents(),
+        "released_amount": req.amount_cents,
+    })))
 }
 
 async fn transfer(
@@ -1026,7 +1072,7 @@ async fn add_identifier(
         other => IdentifierType::Other(other.to_string()),
     };
 
-    let mut svc = state.identity_service.write().unwrap();
+    let svc = state.identity_service.write().unwrap();
     let identifier = svc
         .add_identifier(party_id, id_type, &req.value, req.issuing_country.as_deref())
         .map_err(|e| AppError::BadRequest(e.to_string()))?;
@@ -1058,6 +1104,40 @@ async fn list_identifiers(
     Ok(Json(serde_json::json!({ "identifiers": result, "count": result.len() })))
 }
 
+// ━━━ Identifier Verification ━━━
+
+async fn verify_identifier(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<uuid::Uuid>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let svc = state.identity_service.write().unwrap();
+
+    // Find the identifier across all parties
+    let mut found = None;
+    svc.for_each_party(|party| {
+        if found.is_none() {
+            for ident in svc.get_active_identifiers(party.id) {
+                if ident.id == id {
+                    found = Some(ident.clone());
+                    break;
+                }
+            }
+        }
+    });
+
+    match found {
+        Some(mut ident) => {
+            ident.verify();
+            Ok(Json(serde_json::json!({
+                "id": ident.id,
+                "status": "Active",
+                "verified_at": ident.verified_at.map(|t| t.to_rfc3339()),
+            })))
+        }
+        None => Err(AppError::NotFound),
+    }
+}
+
 // ━━━ Saga Handlers ━━━
 
 async fn get_saga_status(
@@ -1077,15 +1157,39 @@ async fn get_saga_status(
 
 // ━━━ COA Handler ━━━
 
-async fn coa_summary() -> Json<serde_json::Value> {
+async fn coa_summary(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
+    use crate::domain::coa::{CoaAccount, ChartOfAccounts, CoaCategory};
+    use crate::domain::account::AccountType;
+
+    let mut coa = ChartOfAccounts::new(1);
+    state.account_service.for_each(|id, acc| {
+        let (cat, code) = match acc.account_type {
+            AccountType::Asset => (CoaCategory::Asset, "1000"),
+            AccountType::Liability => (CoaCategory::Liability, "2000"),
+            AccountType::Equity => (CoaCategory::Equity, "3000"),
+            AccountType::Revenue => (CoaCategory::Revenue, "4000"),
+            AccountType::Expense => (CoaCategory::Expense, "5000"),
+        };
+        let coa_acct = CoaAccount::new(
+            &format!("{}_{}", code, id),
+            &format!("{:?}", acc.account_type),
+            cat,
+            None,
+            1,
+        );
+        coa.add_account(coa_acct);
+    });
+
+    let accounts: Vec<_> = coa.active_accounts().iter().map(|a| serde_json::json!({
+        "code": a.code,
+        "name": a.name,
+        "category": format!("{:?}", a.category),
+        "normal_balance": format!("{:?}", a.normal_balance),
+    })).collect();
+
     Json(serde_json::json!({
-        "chart_of_accounts": [
-            {"category": "Asset",       "normal_balance": "Debit",  "examples": ["Cash", "Accounts Receivable", "Inventory"]},
-            {"category": "Liability",    "normal_balance": "Credit", "examples": ["Accounts Payable", "Loans Payable", "Accrued Expenses"]},
-            {"category": "Equity",       "normal_balance": "Credit", "examples": ["Common Stock", "Retained Earnings", "Capital"]},
-            {"category": "Revenue",      "normal_balance": "Credit", "examples": ["Sales Revenue", "Interest Income", "Fee Income"]},
-            {"category": "Expense",      "normal_balance": "Debit",  "examples": ["Salaries", "Rent", "Utilities", "Depreciation"]},
-        ]
+        "chart_of_accounts": accounts,
+        "total_count": accounts.len(),
     }))
 }
 
