@@ -1,0 +1,35 @@
+# Conventional Commits — Naming Convention
+
+## TUYỆT ĐỐI CẤM
+
+- ❌ "round X", "round X-Y", "R71", "r77" — bất kỳ reference nào đến round number
+- ❌ "Day X", "Lesson Y" — reference đến course structure
+- ❌ Tên course, tên giảng viên, tên platform trong commit message
+
+## QUY ĐỊNH
+
+Mọi commit PHẢI dùng conventional commits format:
+
+```
+<type>: <mô tả ngắn gọn bằng tiếng Anh>
+
+- feat: tính năng mới
+- fix: sửa lỗi
+- test: thêm/sửa tests
+- docs: documentation
+- refactor: tái cấu trúc code
+- chore: việc lặt vặt (cleanup, format)
+- perf: cải thiện performance
+- ci: CI/CD changes
+- ops: operational (docker, deploy, infra)
+- audit: kiểm toán, security review
+```
+
+## VÍ DỤ
+
+- ✅ `feat: add HDR-style LatencyHistogram with percentile calculation`
+- ✅ `fix: prevent OOM in idempotency service with max capacity eviction`
+- ✅ `test: add 13 event bus edge case tests`
+- ✅ `docs: add security model STRIDE analysis`
+- ❌ `fix: round 69 — startup banner...`
+- ❌ `feat: R77 ed25519 signatures`
