@@ -10,6 +10,7 @@ mod choreography_coverage_tests;
 #[cfg(feature = "full")]
 pub mod concurrency;
 pub mod distributed_state;
+pub mod event_bus_wiring;
 pub mod idempotency;
 #[cfg(test)]
 mod idempotency_coverage_tests;
