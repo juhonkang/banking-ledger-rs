@@ -64,11 +64,11 @@ impl AppState {
 
         // Bootstrap: pre-seed default admin subject from env or well-known UUID.
         // In production, this comes from config. For now, UUID namespace for "admin".
-        let default_admin = SubjectId(Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap());
+        let default_admin = SubjectId(Uuid::parse_str("00000000-0000-0000-0000-000000000001").expect("valid static UUID"));
         rbac.bind(default_admin, crate::rbac::Role::Admin);
 
         // Default auditor (read-only audit access)
-        let default_auditor = SubjectId(Uuid::parse_str("00000000-0000-0000-0000-000000000002").unwrap());
+        let default_auditor = SubjectId(Uuid::parse_str("00000000-0000-0000-0000-000000000002").expect("valid static UUID"));
         rbac.bind(default_auditor, crate::rbac::Role::Auditor);
 
         Self {
@@ -113,7 +113,7 @@ impl AppState {
                 let block_count = chain.blocks.len();
                 if block_count > 1 {
                     // More than just genesis
-                    let mut guard = self.hash_chain.lock().unwrap();
+                    let mut guard = self.hash_chain.lock().expect("hash_chain: lock poisoned");
                     *guard = chain;
                     eprintln!("  Restored hash chain: {block_count} blocks");
                 }
@@ -256,7 +256,7 @@ async fn rate_limit_middleware(
         let mut response = next.run(request).await;
         response.headers_mut().insert(
             "X-RateLimit-Remaining",
-            "100".parse().unwrap(),
+            "100".parse().expect("valid header value"),
         );
         Ok(response)
     } else {
@@ -346,9 +346,9 @@ fn persist_after_mutation(state: &Arc<AppState>) {
             });
             items
         };
-        let journal_clone: Vec<JournalEntry> = state.journal.read().unwrap().clone();
+        let journal_clone: Vec<JournalEntry> = state.journal.read().expect("journal: lock poisoned").clone();
         let chain_blocks = {
-            let guard = state.hash_chain.lock().unwrap();
+            let guard = state.hash_chain.lock().expect("hash_chain: lock poisoned");
             guard.blocks.clone()
         };
         // All guards dropped here — no references escape to tokio::spawn
@@ -572,7 +572,7 @@ async fn transfer(
     drop(to_account);
 
     // ━━━ Create Journal Entry ━━━
-    let mut seq = state.journal_seq.lock().unwrap();
+    let mut seq = state.journal_seq.lock().expect("journal_seq: lock poisoned");
     *seq += 1;
     let sequence_number = *seq;
     drop(seq);
@@ -592,12 +592,12 @@ async fn transfer(
         .map_err(|e| AppError::BadRequest(format!("Serialize error: {e}")))?;
 
     let chain_block = {
-        let mut chain = state.hash_chain.lock().unwrap();
+        let mut chain = state.hash_chain.lock().expect("hash_chain: lock poisoned");
         chain.append(&chain_data).clone()
     };
 
     // ━━━ Store Journal Entry ━━━
-    state.journal.write().unwrap().push(journal_entry);
+    state.journal.write().expect("journal: lock poisoned").push(journal_entry);
 
     let amount_formatted = format_money(req.amount_cents, &currency);
     let amount_decimal = decimal_from_minor(req.amount_cents, &currency);
@@ -626,7 +626,7 @@ async fn transfer(
 async fn list_journal(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<Vec<serde_json::Value>>, AppError> {
-    let journal = state.journal.read().unwrap();
+    let journal = state.journal.read().expect("journal: lock poisoned");
     let entries: Vec<serde_json::Value> = journal
         .iter()
         .map(|e| {
@@ -653,7 +653,7 @@ async fn list_journal(
 async fn verify_chain(
     State(state): State<Arc<AppState>>,
 ) -> Json<serde_json::Value> {
-    let chain = state.hash_chain.lock().unwrap();
+    let chain = state.hash_chain.lock().expect("hash_chain: lock poisoned");
     let (valid, tampered_indices) = chain.verify_chain();
 
     Json(serde_json::json!({
@@ -668,7 +668,7 @@ async fn chain_proof(
     State(state): State<Arc<AppState>>,
     Path(index): Path<u64>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let chain = state.hash_chain.lock().unwrap();
+    let chain = state.hash_chain.lock().expect("hash_chain: lock poisoned");
     let proof = chain.proof_for_block(index).ok_or(AppError::NotFound)?;
 
     Ok(Json(serde_json::json!({
@@ -693,8 +693,8 @@ async fn metrics_handler(State(state): State<Arc<AppState>>) -> Json<serde_json:
         "latency_p99_ms": p99.map(|d| d.as_millis() as u64),
         "circuit_state": format!("{:?}", state.circuit_breaker.state()),
         "accounts_count": state.account_service.count(),
-        "journal_entries": state.journal.read().unwrap().len(),
-        "chain_length": state.hash_chain.lock().unwrap().len(),
+        "journal_entries": state.journal.read().expect("journal: lock poisoned").len(),
+        "chain_length": state.hash_chain.lock().expect("hash_chain: lock poisoned").len(),
     }))
 }
 
@@ -727,7 +727,7 @@ impl IntoResponse for AppError {
 async fn trial_balance(
     State(state): State<Arc<AppState>>,
 ) -> Json<serde_json::Value> {
-    let journal = state.journal.read().unwrap();
+    let journal = state.journal.read().expect("journal: lock poisoned");
     let balances = JournalEntry::trial_balance(&journal);
     
     let result: serde_json::Map<String, serde_json::Value> = balances
@@ -749,7 +749,7 @@ async fn entries_for_account(
     State(state): State<Arc<AppState>>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<Vec<serde_json::Value>>, AppError> {
-    let journal = state.journal.read().unwrap();
+    let journal = state.journal.read().expect("journal: lock poisoned");
     let entries = JournalEntry::for_account(&journal, id);
     
     let result: Vec<serde_json::Value> = entries
@@ -775,7 +775,7 @@ async fn entries_for_account(
 async fn validate_entries(
     State(state): State<Arc<AppState>>,
 ) -> Json<serde_json::Value> {
-    let journal = state.journal.read().unwrap();
+    let journal = state.journal.read().expect("journal: lock poisoned");
     let (valid, invalid_ids) = JournalEntry::validate_all(&journal);
 
     Json(serde_json::json!({
@@ -800,7 +800,7 @@ async fn audit_report(
         .map(|dt| dt.with_timezone(&chrono::Utc))
         .unwrap_or_else(chrono::Utc::now);
 
-    let chain = state.hash_chain.lock().unwrap();
+    let chain = state.hash_chain.lock().expect("hash_chain: lock poisoned");
     let report = chain.audit_report(from, to);
     Ok(report)
 }
@@ -809,7 +809,7 @@ async fn audit_report(
 async fn export_audit_log(
     State(state): State<Arc<AppState>>,
 ) -> Json<serde_json::Value> {
-    let chain = state.hash_chain.lock().unwrap();
+    let chain = state.hash_chain.lock().expect("hash_chain: lock poisoned");
     let log = chain.export_audit_log();
     Json(serde_json::json!({
         "chain_length": chain.len(),
@@ -822,7 +822,7 @@ async fn redact_block(
     State(state): State<Arc<AppState>>,
     Path(index): Path<u64>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let mut chain = state.hash_chain.lock().unwrap();
+    let mut chain = state.hash_chain.lock().expect("hash_chain: lock poisoned");
     let new_head = chain.redact_block(index)
         .map_err(|e| AppError::BadRequest(e))?;
 
@@ -859,7 +859,7 @@ async fn require_permission(
         )
     })?;
 
-    let rbac = state.rbac.read().unwrap();
+    let rbac = state.rbac.read().expect("rbac: lock poisoned");
     if rbac.can(&subject, permission) {
         Ok(subject)
     } else {
@@ -940,7 +940,7 @@ async fn bind_role(
         )),
     };
 
-    let mut rbac = state.rbac.write().unwrap();
+    let mut rbac = state.rbac.write().expect("rbac: lock poisoned");
     let subject = SubjectId(req.subject_id);
     rbac.bind(subject.clone(), role);
 
@@ -963,7 +963,7 @@ async fn get_subject_roles(
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
     let _subject = require_permission(State(state.clone()), headers, Permission::ManageRoles).await?;
 
-    let rbac = state.rbac.read().unwrap();
+    let rbac = state.rbac.read().expect("rbac: lock poisoned");
     let subject = SubjectId(id);
     let roles = rbac.roles_for(&subject);
     let perms = rbac.permissions_for(&subject);
@@ -983,7 +983,7 @@ async fn rbac_audit_export(
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
     let _subject = require_permission(State(state.clone()), headers, Permission::ViewAuditLog).await?;
 
-    let rbac = state.rbac.read().unwrap();
+    let rbac = state.rbac.read().expect("rbac: lock poisoned");
     Ok(Json(rbac.export_audit()))
 }
 
@@ -994,7 +994,7 @@ async fn rbac_matrix(
 ) -> Result<String, (StatusCode, Json<serde_json::Value>)> {
     let _subject = require_permission(State(state.clone()), headers, Permission::ViewAuditLog).await?;
 
-    let rbac = state.rbac.read().unwrap();
+    let rbac = state.rbac.read().expect("rbac: lock poisoned");
     Ok(rbac.permission_matrix())
 }
 
@@ -1018,7 +1018,7 @@ async fn create_party(
         "financial" => PartyType::FinancialInstitution,
         other => PartyType::Other(other.to_string()),
     };
-    let mut svc = state.identity_service.write().unwrap();
+    let mut svc = state.identity_service.write().expect("identity_service: lock poisoned");
     let party = svc.create_party(ptype, &req.legal_name);
 
     Ok(Json(serde_json::json!({
@@ -1030,7 +1030,7 @@ async fn create_party(
 async fn list_parties(
     State(state): State<Arc<AppState>>,
 ) -> Json<serde_json::Value> {
-    let svc = state.identity_service.read().unwrap();
+    let svc = state.identity_service.read().expect("identity_service: lock poisoned");
     let parties: Vec<_> = svc.all_parties().iter().map(|p| serde_json::json!({
         "id": p.id,
         "legal_name": p.legal_name,
@@ -1045,7 +1045,7 @@ async fn get_party(
     State(state): State<Arc<AppState>>,
     Path(id): Path<uuid::Uuid>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let svc = state.identity_service.read().unwrap();
+    let svc = state.identity_service.read().expect("identity_service: lock poisoned");
     let party = svc.get_party(id).ok_or(AppError::NotFound)?;
     Ok(Json(serde_json::json!({
         "id": party.id,
@@ -1081,7 +1081,7 @@ async fn add_identifier(
         other => IdentifierType::Other(other.to_string()),
     };
 
-    let svc = state.identity_service.write().unwrap();
+    let svc = state.identity_service.write().expect("identity_service: lock poisoned");
     let identifier = svc
         .add_identifier(party_id, id_type, &req.value, req.issuing_country.as_deref())
         .map_err(|e| AppError::BadRequest(e.to_string()))?;
@@ -1098,7 +1098,7 @@ async fn list_identifiers(
     State(state): State<Arc<AppState>>,
     Path(party_id): Path<uuid::Uuid>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let svc = state.identity_service.read().unwrap();
+    let svc = state.identity_service.read().expect("identity_service: lock poisoned");
     let identifiers = svc.get_active_identifiers(party_id);
     let result: Vec<_> = identifiers.iter().map(|i| serde_json::json!({
         "id": i.id,
@@ -1119,7 +1119,7 @@ async fn verify_identifier(
     State(state): State<Arc<AppState>>,
     Path(id): Path<uuid::Uuid>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let svc = state.identity_service.write().unwrap();
+    let svc = state.identity_service.write().expect("identity_service: lock poisoned");
 
     // Find the identifier across all parties
     let mut found = None;
@@ -1153,7 +1153,7 @@ async fn get_saga_status(
     State(state): State<Arc<AppState>>,
     Path(id): Path<uuid::Uuid>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let svc = state.saga_service.read().unwrap();
+    let svc = state.saga_service.read().expect("saga_service: lock poisoned");
     let status = svc.get_status(id);
     match status {
         Some(s) => Ok(Json(serde_json::json!({
@@ -1214,7 +1214,7 @@ async fn replace_identifier(
     Path(id): Path<uuid::Uuid>,
     Json(req): Json<ReplaceIdentifierRequest>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let mut svc = state.identity_service.write().unwrap();
+    let mut svc = state.identity_service.write().expect("identity_service: lock poisoned");
 
     // Verify the identifier exists
     let mut exists = false;
@@ -1253,7 +1253,7 @@ async fn reverse_journal_entry(
     State(state): State<Arc<AppState>>,
     Path(entry_id): Path<uuid::Uuid>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let journal = state.journal.read().unwrap();
+    let journal = state.journal.read().expect("journal: lock poisoned");
 
     let original = journal
         .iter()
@@ -1265,14 +1265,14 @@ async fn reverse_journal_entry(
 
     let new_txn_id = uuid::Uuid::now_v7();
     let next_seq = {
-        let mut seq = state.journal_seq.lock().unwrap();
+        let mut seq = state.journal_seq.lock().expect("journal_seq: lock poisoned");
         *seq += 1;
         *seq
     };
 
     let reversal = original.reverse(new_txn_id, next_seq);
 
-    let mut chain = state.hash_chain.lock().unwrap();
+    let mut chain = state.hash_chain.lock().expect("hash_chain: lock poisoned");
     let block_data = serde_json::json!({
         "action": "journal_reversal",
         "entry_id": reversal.id.to_string(),
@@ -1283,7 +1283,7 @@ async fn reverse_journal_entry(
     chain.append(&block_data.to_string());
     drop(chain);
 
-    state.journal.write().unwrap().push(reversal.clone());
+    state.journal.write().expect("journal: lock poisoned").push(reversal.clone());
 
     persist_after_mutation(&state);
 
@@ -1325,7 +1325,7 @@ async fn commit_transaction(
     State(state): State<Arc<AppState>>,
     Path(txn_id): Path<uuid::Uuid>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let mut chain = state.hash_chain.lock().unwrap();
+    let mut chain = state.hash_chain.lock().expect("hash_chain: lock poisoned");
     let block_data = serde_json::json!({
         "action": "transaction_commit",
         "transaction_id": txn_id.to_string(),
@@ -1344,7 +1344,7 @@ async fn reject_transaction(
     State(state): State<Arc<AppState>>,
     Path(txn_id): Path<uuid::Uuid>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let mut chain = state.hash_chain.lock().unwrap();
+    let mut chain = state.hash_chain.lock().expect("hash_chain: lock poisoned");
     let block_data = serde_json::json!({
         "action": "transaction_reject",
         "transaction_id": txn_id.to_string(),
@@ -1404,7 +1404,7 @@ async fn coa_deactivate(
 ) -> Result<Json<serde_json::Value>, AppError> {
     let success = state.account_service.set_status(id, AccountStatus::Closed);
     if success {
-        let mut chain = state.hash_chain.lock().unwrap();
+        let mut chain = state.hash_chain.lock().expect("hash_chain: lock poisoned");
         chain.append(&format!("coa_deactivate:{}", id));
         drop(chain);
         persist_after_mutation(&state);
