@@ -44,13 +44,12 @@ mod exhaustive_edge_tests {
     fn test_hold_release_more_than_held() {
         let acc = Account::new(AccountType::Asset, "USD", 10000, None);
         acc.place_hold(5000).unwrap();
-        // Release more than was held — available exceeds balance! This is a bug if not guarded
-        acc.release_hold(10000).unwrap();
-        // available_balance is now 15000 (10000 - 5000 + 10000 = 15000)
-        // but current_balance is still 10000
-        // This IS a problem in real systems — should be caught
-        // Documenting: our implementation allows this (no guard)
-        assert_eq!(acc.available_balance_cents(), 15000);
+        // Release more than was held — should now return Err
+        let result = acc.release_hold(10000);
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), HoldError::ReleaseExceedsHeld { .. }));
+        // available_balance should still be 5000 (release was rejected)
+        assert_eq!(acc.available_balance_cents(), 5000);
         assert_eq!(acc.balance_cents(), 10000);
     }
 

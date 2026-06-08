@@ -357,22 +357,33 @@ impl Account {
     /// Release a previously placed hold.
     ///
     /// Restores `available_balance`. Does not affect `balance`.
-    /// Uses checked addition to prevent overflow.
+    /// Guards against releasing more than the total held amount
+    /// (`balance - available_balance`).
     pub fn release_hold(&self, amount_cents: i64) -> Result<(), HoldError> {
         if amount_cents <= 0 {
             return Err(HoldError::InvalidAmount);
         }
 
-        // Prevent holds on non-Open accounts
         let status = self.status();
         if status != AccountStatus::Open {
             return Err(HoldError::AccountNotOpen(status));
         }
 
-        // Checked add to prevent silent overflow (BUG #2 fix)
         loop {
             let current = self.available_balance.load(Ordering::SeqCst);
+            let balance = self.balance.load(Ordering::SeqCst);
             let new_val = current.checked_add(amount_cents).ok_or(HoldError::InvalidAmount)?;
+
+            // Guard: available_balance must not exceed balance
+            // (prevents releasing more than was held)
+            if new_val > balance {
+                return Err(HoldError::ReleaseExceedsHeld {
+                    available: current,
+                    balance,
+                    attempted_release: amount_cents,
+                });
+            }
+
             if self.available_balance.compare_exchange(
                 current, new_val, Ordering::SeqCst, Ordering::SeqCst
             ).is_ok() {
@@ -442,5 +453,15 @@ pub enum HoldError {
         available: i64,
         /// Requested hold amount
         hold: i64,
+    },
+    /// Attempted to release more than was held (available would exceed balance)
+    #[error("release exceeds held amount: available={available}, balance={balance}, attempted_release={attempted_release}")]
+    ReleaseExceedsHeld {
+        /// Current available balance
+        available: i64,
+        /// Current total balance (upper bound)
+        balance: i64,
+        /// Amount attempted to release
+        attempted_release: i64,
     },
 }
