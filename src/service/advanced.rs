@@ -14,7 +14,7 @@ pub struct DeadlockDetector {
     held: HashMap<u64, Vec<String>>,
     /// Wait-for: `thread_id` → resources it's waiting for
     waiting: HashMap<u64, Vec<String>>,
-    /// Resource ownership: resource → thread_id holding it
+    /// Resource ownership: resource → `thread_id` holding it
     pub(crate) owners: HashMap<String, u64>,
 }
 

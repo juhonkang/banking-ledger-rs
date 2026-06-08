@@ -86,7 +86,7 @@ pub enum Permission {
 /// RBAC engine — maps subjects to roles, roles to permissions.
 #[derive(Debug, Clone)]
 pub struct RbacEngine {
-    /// subject_id → set of roles
+    /// `subject_id` → set of roles
     role_bindings: HashMap<SubjectId, HashSet<Role>>,
     /// role → set of permissions
     role_permissions: HashMap<Role, HashSet<Permission>>,
@@ -214,8 +214,7 @@ impl RbacEngine {
         roles.iter().any(|role| {
             self.role_permissions
                 .get(role)
-                .map(|perms| perms.contains(&permission))
-                .unwrap_or(false)
+                .is_some_and(|perms| perms.contains(&permission))
         })
     }
 
@@ -246,7 +245,7 @@ impl RbacEngine {
         self.role_bindings
             .iter()
             .filter(|(_, roles)| roles.contains(&role))
-            .map(|(subj, _)| subj.clone())
+            .map(|(subj, _)| *subj)
             .collect()
     }
 
@@ -258,11 +257,11 @@ impl RbacEngine {
             .map(|(subj, roles)| {
                 serde_json::json!({
                     "subject": subj.0.to_string(),
-                    "roles": roles.iter().map(|r| format!("{:?}", r)).collect::<Vec<_>>(),
+                    "roles": roles.iter().map(|r| format!("{r:?}")).collect::<Vec<_>>(),
                     "effective_permissions": self
                         .permissions_for(subj)
                         .iter()
-                        .map(|p| format!("{:?}", p))
+                        .map(|p| format!("{p:?}"))
                         .collect::<Vec<_>>(),
                 })
             })
@@ -315,7 +314,7 @@ impl std::fmt::Display for AuthzError {
 
 // ━━━ RBAC Extension Trait ━━━
 
-/// Extension trait for RbacEngine — adds banking-specific helpers.
+/// Extension trait for `RbacEngine` — adds banking-specific helpers.
 pub trait RbacExt {
     /// Grant a customer access to their own accounts.
     fn onboard_customer(&mut self, customer_id: Uuid) -> SubjectId;
@@ -333,7 +332,7 @@ pub trait RbacExt {
 impl RbacExt for RbacEngine {
     fn onboard_customer(&mut self, customer_id: Uuid) -> SubjectId {
         let subject = SubjectId(customer_id);
-        self.bind(subject.clone(), Role::Customer);
+        self.bind(subject, Role::Customer);
         subject
     }
 
@@ -360,6 +359,7 @@ impl RbacExt for RbacEngine {
         Ok(())
     }
 
+    #[allow(clippy::format_push_string)]
     fn permission_matrix(&self) -> String {
         let roles = [
             Role::Admin,
@@ -375,17 +375,16 @@ impl RbacExt for RbacEngine {
 
         for role in &roles {
             let perms = self.role_permissions.get(role);
-            let name = format!("{:?}", role);
-            let read = if perms.map_or(false, |p| p.contains(&Permission::ReadAnyAccount)) { "✓" } else { "-" };
-            let create = if perms.map_or(false, |p| p.contains(&Permission::CreateAccount)) { "✓" } else { "-" };
-            let transfer = if perms.map_or(false, |p| p.contains(&Permission::InitiateTransfer)) { "✓" } else { "-" };
-            let view = if perms.map_or(false, |p| p.contains(&Permission::ViewAnyTransaction)) { "✓" } else { "-" };
-            let audit = if perms.map_or(false, |p| p.contains(&Permission::ViewAuditLog)) { "✓" } else { "-" };
-            let redact = if perms.map_or(false, |p| p.contains(&Permission::RedactPii)) { "✓" } else { "-" };
+            let name = format!("{role:?}");
+            let read = if perms.is_some_and(|p| p.contains(&Permission::ReadAnyAccount)) { "✓" } else { "-" };
+            let create = if perms.is_some_and(|p| p.contains(&Permission::CreateAccount)) { "✓" } else { "-" };
+            let transfer = if perms.is_some_and(|p| p.contains(&Permission::InitiateTransfer)) { "✓" } else { "-" };
+            let view = if perms.is_some_and(|p| p.contains(&Permission::ViewAnyTransaction)) { "✓" } else { "-" };
+            let audit = if perms.is_some_and(|p| p.contains(&Permission::ViewAuditLog)) { "✓" } else { "-" };
+            let redact = if perms.is_some_and(|p| p.contains(&Permission::RedactPii)) { "✓" } else { "-" };
 
             matrix.push_str(&format!(
-                "{:<16} | {:>7} | {:>9} | {:>8} | {:>7} | {:>5} | {:>6}\n",
-                name, read, create, transfer, view, audit, redact
+                "{name:<16} | {read:>7} | {create:>9} | {transfer:>8} | {view:>7} | {audit:>5} | {redact:>6}\n"
             ));
         }
 

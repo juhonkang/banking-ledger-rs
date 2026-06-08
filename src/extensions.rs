@@ -15,13 +15,12 @@
 //! capability layer.
 
 use chrono::{DateTime, Utc};
-use serde::Serialize;
 use uuid::Uuid;
 
-use crate::domain::account::{Account, AccountId, AccountStatus};
-use crate::domain::journal::{EntryLeg, EntrySide, JournalEntry, JournalEntryId};
+use crate::domain::account::{Account, AccountId};
+use crate::domain::journal::{EntrySide, JournalEntry, JournalEntryId};
 use crate::domain::money::{Currency, Money};
-use crate::log::hash_chain::{ChainProof, HashChain, HashLink, SignedTransaction};
+use crate::log::hash_chain::{HashChain, SignedTransaction};
 
 // ━━━ HashChain Extension — Cryptographic Operations ━━━
 
@@ -56,6 +55,7 @@ impl HashChainExt for HashChain {
         SignedTransaction::sign(tx_id, &block.hash, &key)
     }
 
+    #[allow(clippy::format_push_string)]
     fn audit_report(&self, from: DateTime<Utc>, to: DateTime<Utc>) -> String {
         let blocks = self.query_by_time(from, to);
         let mut report = format!(
@@ -91,7 +91,7 @@ impl HashChainExt for HashChain {
 
     fn redact_block(&mut self, index: u64) -> Result<String, String> {
         self.redact(index)
-            .map_err(|e| format!("Redaction failed: {:?}", e))?;
+            .map_err(|e| format!("Redaction failed: {e:?}"))?;
         Ok(self.latest().expect("chain always has genesis block").hash.clone())
     }
 
@@ -167,7 +167,7 @@ impl JournalExt for JournalEntry {
 
     /// Compute trial balance (sum of debits/credits per account).
     /// Uses saturating arithmetic to prevent panics on overflow.
-    /// For production, use i128 intermediates via verify_balance pattern.
+    /// For production, use i128 intermediates via `verify_balance` pattern.
     fn trial_balance(
         entries: &[JournalEntry],
     ) -> std::collections::HashMap<AccountId, (i64, i64)> {

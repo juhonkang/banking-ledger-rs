@@ -3,7 +3,7 @@
 //! decentralized event propagation — each service reacts to events
 //! and publishes its own, forming a reactive chain.
 //!
-//! Every consumer is idempotent via correlation_id deduplication.
+//! Every consumer is idempotent via `correlation_id` deduplication.
 
 use chrono::{DateTime, Utc};
 use dashmap::DashMap;
@@ -103,6 +103,12 @@ pub struct ChoreographyTransactionService {
     pub states: DashMap<String, SagaState>,
 }
 
+impl Default for ChoreographyTransactionService {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ChoreographyTransactionService {
     pub fn new() -> Self {
         Self {
@@ -186,9 +192,15 @@ impl ChoreographyTransactionService {
 /// Reacts to transfer initiation events by debiting the source account.
 pub struct ChoreographyAccountService {
     pub balances: DashMap<String, Decimal>,
-    /// Track already-processed correlation_ids for idempotency.
+    /// Track already-processed `correlation_ids` for idempotency.
     pub processed_debits: DashMap<Uuid, ()>,
     pub processed_credits: DashMap<Uuid, ()>,
+}
+
+impl Default for ChoreographyAccountService {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ChoreographyAccountService {
@@ -205,7 +217,7 @@ impl ChoreographyAccountService {
         self.balances.insert(account_id.to_string(), balance);
     }
 
-    /// Handle TransferInitiatedEvent: debit source, return result event.
+    /// Handle `TransferInitiatedEvent`: debit source, return result event.
     pub fn handle_transfer_initiated(
         &self,
         event: &TransferInitiatedEvent,
@@ -255,7 +267,7 @@ impl ChoreographyAccountService {
         }
     }
 
-    /// Handle AccountDebitedEvent: credit destination.
+    /// Handle `AccountDebitedEvent`: credit destination.
     pub fn handle_account_debited(
         &self,
         event: &AccountDebitedEvent,
@@ -273,33 +285,30 @@ impl ChoreographyAccountService {
         }
 
         let current_balance = self.balances.get(to_account).map(|b| *b);
-        match current_balance {
-            Some(b) => {
-                let new_balance = b + event.amount;
-                self.balances.insert(to_account.to_string(), new_balance);
-                self.processed_credits.insert(event.correlation_id, ());
-                Ok(AccountCreditedEvent {
-                    correlation_id: event.correlation_id,
-                    transaction_id: event.transaction_id.clone(),
-                    account_id: to_account.to_string(),
-                    amount: event.amount,
-                    timestamp: Utc::now(),
-                })
+        if let Some(b) = current_balance {
+            let new_balance = b + event.amount;
+            self.balances.insert(to_account.to_string(), new_balance);
+            self.processed_credits.insert(event.correlation_id, ());
+            Ok(AccountCreditedEvent {
+                correlation_id: event.correlation_id,
+                transaction_id: event.transaction_id.clone(),
+                account_id: to_account.to_string(),
+                amount: event.amount,
+                timestamp: Utc::now(),
+            })
+        } else {
+            // Compensation: refund the debit
+            if let Some(mut b) = self.balances.get_mut(&event.account_id) {
+                *b += event.amount;
             }
-            None => {
-                // Compensation: refund the debit
-                if let Some(mut b) = self.balances.get_mut(&event.account_id) {
-                    *b += event.amount;
-                }
-                Err(AccountCreditFailedEvent {
-                    correlation_id: event.correlation_id,
-                    transaction_id: event.transaction_id.clone(),
-                    account_id: to_account.to_string(),
-                    amount: event.amount,
-                    reason: "DESTINATION_NOT_FOUND".to_string(),
-                    timestamp: Utc::now(),
-                })
-            }
+            Err(AccountCreditFailedEvent {
+                correlation_id: event.correlation_id,
+                transaction_id: event.transaction_id.clone(),
+                account_id: to_account.to_string(),
+                amount: event.amount,
+                reason: "DESTINATION_NOT_FOUND".to_string(),
+                timestamp: Utc::now(),
+            })
         }
     }
 }

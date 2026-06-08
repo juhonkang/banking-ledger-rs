@@ -314,11 +314,11 @@ impl ReadModel {
                 if let Some(proj) = self.accounts.get_mut(&id) {
                     // Use i128 to detect overflow before committing
                     let new_bal = i128::from(proj.balance_cents) + i128::from(amount);
-                    if new_bal > i64::MAX as i128 || new_bal < i64::MIN as i128 {
+                    if new_bal > i128::from(i64::MAX) || new_bal < i128::from(i64::MIN) {
                         return; // overflow — log and skip
                     }
                     let new_sys = i128::from(self.total_system_balance) + i128::from(amount);
-                    if new_sys > i64::MAX as i128 || new_sys < i64::MIN as i128 {
+                    if new_sys > i128::from(i64::MAX) || new_sys < i128::from(i64::MIN) {
                         return;
                     }
                     proj.balance_cents = new_bal as i64;
@@ -344,11 +344,11 @@ impl ReadModel {
                 }
                 if let Some(proj) = self.accounts.get_mut(&id) {
                     let new_bal = i128::from(proj.balance_cents) - i128::from(amount);
-                    if new_bal > i64::MAX as i128 || new_bal < i64::MIN as i128 {
+                    if new_bal > i128::from(i64::MAX) || new_bal < i128::from(i64::MIN) {
                         return;
                     }
                     let new_sys = i128::from(self.total_system_balance) - i128::from(amount);
-                    if new_sys > i64::MAX as i128 || new_sys < i64::MIN as i128 {
+                    if new_sys > i128::from(i64::MAX) || new_sys < i128::from(i64::MIN) {
                         return;
                     }
                     proj.balance_cents = new_bal as i64;

@@ -66,7 +66,7 @@ impl ThunderingHerdSimulation {
         let wall_start = Instant::now();
 
         for _ in 0..self.num_workers {
-            let gate = gate.clone();
+            let _gate = gate.clone();
             let barrier = start_barrier.clone();
             let success = successful.clone();
             let to_count = timed_out_count.clone();

@@ -428,7 +428,7 @@ impl LatencyHistogram {
     /// Approximate percentile. Linear interpolation between bucket boundaries.
     /// `pct` should be 0.0-100.0.
     pub fn percentile(&self, pct: f64) -> Option<u64> {
-        if pct < 0.0 || pct > 100.0 {
+        if !(0.0..=100.0).contains(&pct) {
             return None;
         }
         let total = self.total_count.load(Ordering::Relaxed);
@@ -453,7 +453,7 @@ impl LatencyHistogram {
 
     /// Reset all counters.
     pub fn reset(&self) {
-        for bucket in self.buckets.iter() {
+        for bucket in &self.buckets {
             bucket.store(0, Ordering::Relaxed);
         }
         self.total_count.store(0, Ordering::Relaxed);

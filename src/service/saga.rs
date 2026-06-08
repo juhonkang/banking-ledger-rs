@@ -401,6 +401,7 @@ impl Default for TimeoutHandler {
 // ━━━ Visualization ━━━
 
 /// Simple DOT graph generator for saga state visualization.
+#[allow(clippy::format_push_string)]
 pub fn visualize_saga_dot(instance: &SagaInstance, steps: &[SagaStep]) -> String {
     let mut dot = String::from("digraph Saga {\n");
     dot.push_str("  rankdir=LR;\n");

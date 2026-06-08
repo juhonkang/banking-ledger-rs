@@ -47,9 +47,9 @@ pub struct EntryLeg {
 
 impl EntryLeg {
     /// Create a debit leg. Panics in debug if amount ≤ 0.
-    /// In release, returns an EntryLeg with amount=0 (caller should validate).
+    /// In release, returns an `EntryLeg` with amount=0 (caller should validate).
     pub fn debit(account_id: AccountId, amount_cents: i64) -> Self {
-        debug_assert!(amount_cents > 0, "EntryLeg::debit requires amount_cents > 0, got {}", amount_cents);
+        debug_assert!(amount_cents > 0, "EntryLeg::debit requires amount_cents > 0, got {amount_cents}");
         Self {
             account_id,
             side: EntrySide::Debit,
@@ -61,9 +61,9 @@ impl EntryLeg {
     }
 
     /// Create a credit leg. Panics in debug if amount ≤ 0.
-    /// In release, returns an EntryLeg with amount=0 (caller should validate).
+    /// In release, returns an `EntryLeg` with amount=0 (caller should validate).
     pub fn credit(account_id: AccountId, amount_cents: i64) -> Self {
-        debug_assert!(amount_cents > 0, "EntryLeg::credit requires amount_cents > 0, got {}", amount_cents);
+        debug_assert!(amount_cents > 0, "EntryLeg::credit requires amount_cents > 0, got {amount_cents}");
         Self {
             account_id,
             side: EntrySide::Credit,
@@ -281,7 +281,7 @@ impl std::error::Error for JournalError {}
 
 /// Compute the net position for a specific account from a set of legs.
 ///
-/// Returns (total_credits, total_debits, net) where net = credits - debits.
+/// Returns (`total_credits`, `total_debits`, net) where net = credits - debits.
 /// Positive net means the account has a net credit position.
 pub fn net_position(legs: &[EntryLeg], account_id: AccountId) -> (i128, i128, i128) {
     let credits: i128 = legs

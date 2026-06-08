@@ -1,14 +1,14 @@
-//! SurrealDB persistence layer for Banking Ledger.
+//! `SurrealDB` persistence layer for Banking Ledger.
 //!
-//! Connected via WebSocket to a dedicated SurrealDB container.
-//! docker compose up → SurrealDB on :4321 → this module connects.
+//! Connected via WebSocket to a dedicated `SurrealDB` container.
+//! docker compose up → `SurrealDB` on :4321 → this module connects.
 
 use std::sync::Arc;
 use surrealdb::engine::remote::ws::{Client, Ws};
 use surrealdb::opt::auth::Root;
 use surrealdb::Surreal;
 
-use crate::domain::account::{Account, AccountId, AccountType, AccountStatus};
+use crate::domain::account::{Account, AccountType};
 use crate::domain::journal::JournalEntry;
 use crate::log::hash_chain::HashChain;
 
@@ -17,7 +17,7 @@ pub struct SurrealStore {
 }
 
 impl SurrealStore {
-    /// Connect to SurrealDB.
+    /// Connect to `SurrealDB`.
     pub async fn connect(
         url: &str,
         ns: &str,
@@ -95,7 +95,7 @@ impl SurrealStore {
         Ok(())
     }
 
-    /// Load all accounts from SurrealDB.
+    /// Load all accounts from `SurrealDB`.
     pub async fn load_all_accounts(&self) -> Result<Vec<Account>, String> {
         let mut result = self
             .db
@@ -116,15 +116,14 @@ impl SurrealStore {
 
             let atype = row["account_type"]
                 .as_str()
-                .map(|s| match s {
+                .map_or(AccountType::Asset, |s| match s {
                     "Asset" => AccountType::Asset,
                     "Liability" => AccountType::Liability,
                     "Equity" => AccountType::Equity,
                     "Revenue" => AccountType::Revenue,
                     "Expense" => AccountType::Expense,
                     _ => AccountType::Asset,
-                })
-                .unwrap_or(AccountType::Asset);
+                });
 
             let currency = row["currency"].as_str().unwrap_or("USD").to_string();
             let balance_cents = row["balance_cents"].as_i64().unwrap_or(0);
@@ -196,8 +195,8 @@ impl SurrealStore {
         self.db.query("SELECT 1").await.is_ok()
     }
 
-    /// Load the hash chain from SurrealDB.
-    /// Returns a HashChain rebuilt from stored blocks, or a fresh chain if empty.
+    /// Load the hash chain from `SurrealDB`.
+    /// Returns a `HashChain` rebuilt from stored blocks, or a fresh chain if empty.
     pub async fn load_hash_chain(&self, signing_key: &[u8]) -> Result<HashChain, String> {
         let mut result = self
             .db
@@ -222,10 +221,8 @@ impl SurrealStore {
             let prev = row["previous_hash"].as_str().unwrap_or("").to_string();
             let data = row["data"].as_str().unwrap_or("").to_string();
             let ts = row["timestamp"].as_str().unwrap_or("");
-            let nonce = row["nonce"].as_u64().unwrap_or(0) as u64;
-            let timestamp = chrono::DateTime::parse_from_rfc3339(ts)
-                .map(|dt| dt.with_timezone(&chrono::Utc))
-                .unwrap_or_else(|_| chrono::Utc::now());
+            let nonce = row["nonce"].as_u64().unwrap_or(0);
+            let timestamp = chrono::DateTime::parse_from_rfc3339(ts).map_or_else(|_| chrono::Utc::now(), |dt| dt.with_timezone(&chrono::Utc));
 
             blocks.push(crate::log::hash_chain::HashLink {
                 index: idx,

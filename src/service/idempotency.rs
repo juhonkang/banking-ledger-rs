@@ -1,5 +1,5 @@
-//! Idempotent event consumer — deduplicates events by transaction_id.
-//! Uses DashMap for lock-free dedup with configurable TTL-based eviction.
+//! Idempotent event consumer — deduplicates events by `transaction_id`.
+//! Uses `DashMap` for lock-free dedup with configurable TTL-based eviction.
 
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use dashmap::DashMap;
@@ -8,7 +8,7 @@ use dashmap::DashMap;
 const DEFAULT_MAX_ENTRIES: usize = 100_000;
 
 /// Dedicated idempotency service for event consumers.
-/// Every event carries a transaction_id used as the dedup key.
+/// Every event carries a `transaction_id` used as the dedup key.
 /// Auto-evicts oldest entries when capacity is exceeded.
 pub struct IdempotencyService {
     processed: DashMap<String, DateTime<Utc>>,

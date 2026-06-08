@@ -69,6 +69,7 @@ pub enum ActionStatus {
 
 impl PostMortem {
     /// Generate a full post-mortem report in markdown
+    #[allow(clippy::format_push_string)]
     pub fn to_markdown(&self) -> String {
         let mut md = String::new();
         md.push_str(&format!("# Post-Mortem: {}\n\n", self.title));
@@ -305,9 +306,7 @@ impl ThunderingHerdSim {
 
         let avg: Duration = if latencies.is_empty() {
             Duration::ZERO
-        } else {
-            if latencies.is_empty() { Duration::ZERO } else { latencies.iter().sum::<Duration>() / latencies.len() as u32 }
-        };
+        } else if latencies.is_empty() { Duration::ZERO } else { latencies.iter().sum::<Duration>() / latencies.len() as u32 };
         let max = latencies.iter().max().copied().unwrap_or(Duration::ZERO);
         (avg, max, f64::from(successes) / self.num_clients as f64)
     }

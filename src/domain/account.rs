@@ -184,10 +184,9 @@ impl Account {
         let current = *s;
         match (current, new_status) {
             (AccountStatus::Closed, _) => return Err(AccountStatusError::ClosedAccount),
-            (AccountStatus::Open, AccountStatus::Closed)
-            | (AccountStatus::Frozen, AccountStatus::Closed)
-            | (AccountStatus::Open, AccountStatus::Frozen)
-            | (AccountStatus::Frozen, AccountStatus::Open) => {} // valid
+            (AccountStatus::Open | AccountStatus::Frozen, AccountStatus::Closed) |
+(AccountStatus::Open, AccountStatus::Frozen) |
+(AccountStatus::Frozen, AccountStatus::Open) => {} // valid
             _ => return Err(AccountStatusError::InvalidTransition { from: current, to: new_status }),
         }
         *s = new_status;
@@ -259,14 +258,14 @@ impl Account {
 
     /// Credit (deposit) to the account.
     ///
-    /// Uses a CAS loop to detect overflow safely. While fetch_add is faster,
+    /// Uses a CAS loop to detect overflow safely. While `fetch_add` is faster,
     /// silent i64 overflow is unacceptable for financial operations.
     ///
     /// # Errors
     ///
     /// - [`CreditError::InvalidAmount`] — amount ≤ 0
     /// - [`CreditError::AccountNotOpen`] — account is Frozen or Closed
-    /// - [`CreditError::Overflow`] — balance would exceed i64::MAX
+    /// - [`CreditError::Overflow`] — balance would exceed `i64::MAX`
     #[must_use = "credit result must be checked"]
     pub fn credit(&self, amount_cents: i64) -> Result<i64, CreditError> {
         if amount_cents <= 0 {
@@ -429,7 +428,7 @@ pub enum CreditError {
     /// Account is not in Open state
     #[error("cannot credit account with status {0:?}")]
     AccountNotOpen(AccountStatus),
-    /// Balance overflow — amount would exceed i64::MAX
+    /// Balance overflow — amount would exceed `i64::MAX`
     #[error("credit overflow: balance + amount would exceed i64::MAX")]
     Overflow,
 }

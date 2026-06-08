@@ -5,8 +5,6 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
 
-use chrono::Utc;
-use uuid::Uuid;
 
 use crate::domain::account::{Account, AccountId};
 use crate::domain::journal::{

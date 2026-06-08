@@ -1,5 +1,5 @@
 //! Boundary probe extended tests — extreme edge conditions (Round 3 audit).
-//! Probes system behavior at absolute limits: 0-capacity buffers, usize::MAX
+//! Probes system behavior at absolute limits: 0-capacity buffers, `usize::MAX`
 //! wrapping, massive chain/saga sizes, high-contention CAS stress, and more.
 
 #[cfg(test)]

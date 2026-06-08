@@ -69,7 +69,7 @@ impl TransactionStateProjector {
     /// Apply a transaction event to the materialized view.
     /// Idempotent: ignores events older than the current state.
     pub fn apply(&self, event: TransactionEvent) {
-        let mut entry = self.states.entry(event.transaction_id);
+        let entry = self.states.entry(event.transaction_id);
 
         match entry {
             dashmap::mapref::entry::Entry::Occupied(mut occ) => {

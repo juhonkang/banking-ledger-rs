@@ -114,7 +114,7 @@ pub fn hmac_sign(key: &[u8], message: &[u8]) -> String {
     // Inner: H(key ⊕ 0x36 || message)
     let mut inner = Sha256::new();
     for byte in effective_key {
-        inner.update(&[*byte ^ 0x36]);
+        inner.update([*byte ^ 0x36]);
     }
     inner.update(message);
     let inner_hash = inner.finalize();
@@ -122,7 +122,7 @@ pub fn hmac_sign(key: &[u8], message: &[u8]) -> String {
     // Outer: H(key ⊕ 0x5c || inner_hash)
     let mut outer = Sha256::new();
     for byte in effective_key {
-        outer.update(&[*byte ^ 0x5c]);
+        outer.update([*byte ^ 0x5c]);
     }
     outer.update(inner_hash);
     hex::encode(outer.finalize())
@@ -363,7 +363,7 @@ pub enum RedactError {
 /// Splits the chain into roughly even chunks and verifies each in parallel,
 /// then cross-validates chunk boundaries.
 ///
-/// Returns (is_valid, list_of_tampered_indices).
+/// Returns (`is_valid`, `list_of_tampered_indices`).
 pub fn batch_verify_parallel(chain: &HashChain, num_chunks: usize) -> (bool, Vec<u64>) {
     let total_blocks = chain.blocks.len();
     if total_blocks == 0 {
@@ -374,7 +374,7 @@ pub fn batch_verify_parallel(chain: &HashChain, num_chunks: usize) -> (bool, Vec
         return chain.verify_chain();
     }
 
-    let chunk_size = (total_blocks + num_chunks - 1) / num_chunks;
+    let chunk_size = total_blocks.div_ceil(num_chunks);
     let blocks = &chain.blocks;
 
     // Verify each chunk in parallel

@@ -1,6 +1,6 @@
 //! Event bus wiring — integrates previously unwired primitives.
-//! FencingToken, IdempotentProducer, and TransactionalProducer
-//! now accessible through a unified EventBus API.
+//! `FencingToken`, `IdempotentProducer`, and `TransactionalProducer`
+//! now accessible through a unified `EventBus` API.
 
 use std::sync::Arc;
 
@@ -8,7 +8,7 @@ use crate::log::event_bus::{
     FencingToken, IdempotentProducer, PartitionedEventBus, TransactionalProducer,
 };
 
-/// Wired EventBus — composes idempotent producer with fencing tokens
+/// Wired `EventBus` — composes idempotent producer with fencing tokens
 /// for exactly-once semantics in distributed event publishing.
 pub struct WiredEventBus {
     pub bus: Arc<PartitionedEventBus>,

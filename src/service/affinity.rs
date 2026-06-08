@@ -4,13 +4,13 @@
 use std::thread;
 
 /// Pin the current thread to a specific CPU core.
-/// Uses libc::sched_setaffinity on Linux.
+/// Uses `libc::sched_setaffinity` on Linux.
 /// Returns true if pinning succeeded.
 pub fn pin_to_core(core_id: usize) -> bool {
     #[cfg(target_os = "linux")]
     {
         let mut cpu_set = unsafe { std::mem::zeroed::<libc::cpu_set_t>() };
-        let core_count = core_id / (std::mem::size_of::<libc::cpu_set_t>() * 8);
+        let _core_count = core_id / (std::mem::size_of::<libc::cpu_set_t>() * 8);
         let bit_offset = core_id % (std::mem::size_of::<libc::cpu_set_t>() * 8);
         unsafe {
             libc::CPU_SET(bit_offset, &mut cpu_set);
@@ -19,7 +19,7 @@ pub fn pin_to_core(core_id: usize) -> bool {
             libc::sched_setaffinity(
                 0, // 0 = current thread
                 std::mem::size_of::<libc::cpu_set_t>(),
-                &cpu_set,
+                &raw const cpu_set,
             )
         };
         result == 0
@@ -78,7 +78,7 @@ where
     (0..count)
         .map(|i| {
             let w = work.clone();
-            let name_clone = format!("{}-{}", name, i);
+            let name_clone = format!("{name}-{i}");
             let core = start_core + i;
             thread::spawn(move || {
                 configure_worker(&name_clone, core);

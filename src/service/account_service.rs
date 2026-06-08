@@ -1,5 +1,5 @@
-//! Thread-safe account registry backed by DashMap.
-//! DashMap provides lock-free reads — ideal for the hot read path.
+//! Thread-safe account registry backed by `DashMap`.
+//! `DashMap` provides lock-free reads — ideal for the hot read path.
 
 use dashmap::DashMap;
 
@@ -114,12 +114,12 @@ impl AccountService {
 
     /// For persistence: iterate all accounts
     pub fn for_each(&self, mut f: impl FnMut(&AccountId, &Account)) {
-        for entry in self.accounts.iter() {
+        for entry in &self.accounts {
             f(entry.key(), entry.value());
         }
     }
 
-    /// Direct insert for startup restore (bypasses Account::new)
+    /// Direct insert for startup restore (bypasses `Account::new`)
     pub fn insert_raw(&self, id: AccountId, account: Account) {
         self.accounts.insert(id, account);
     }

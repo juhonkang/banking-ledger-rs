@@ -329,7 +329,7 @@ pub struct GoldenSignals {
     request_count: AtomicU64,
     /// Error count in current window
     error_count: AtomicU64,
-    /// Error count by category (INSUFFICIENT_FUNDS, TIMEOUT, SYSTEM_ERROR, etc.)
+    /// Error count by category (`INSUFFICIENT_FUNDS`, TIMEOUT, `SYSTEM_ERROR`, etc.)
     error_categories: DashMap<String, AtomicU64>,
     /// Latency bucket counts: "<10ms", "10-50ms", "50-100ms", ">100ms"
     latency_buckets: DashMap<String, AtomicU64>,
@@ -415,10 +415,10 @@ impl GoldenSignals {
         self.request_count.store(0, Ordering::SeqCst);
         self.error_count.store(0, Ordering::SeqCst);
         self.latency_samples.lock().unwrap().clear();
-        for e in self.error_categories.iter() {
+        for e in &self.error_categories {
             e.value().store(0, Ordering::SeqCst);
         }
-        for b in self.latency_buckets.iter() {
+        for b in &self.latency_buckets {
             b.value().store(0, Ordering::SeqCst);
         }
     }

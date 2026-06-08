@@ -87,7 +87,7 @@ impl Currency {
         }
     }
 
-    /// Number of subunits per major unit (10^minor_unit)
+    /// Number of subunits per major unit (`10^minor_unit`)
     #[must_use]
     pub const fn subunits_per_unit(&self) -> u64 {
         10u64.pow(self.minor_unit as u32)

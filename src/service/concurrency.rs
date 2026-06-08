@@ -1,6 +1,6 @@
 //! Concurrency primitives for high-throughput financial operations.
-//! All hot-path balance updates are lock-free via AtomicI64 CAS loops.
-//! Cold-path coordination uses Condvar, RwLock, and fair queuing.
+//! All hot-path balance updates are lock-free via `AtomicI64` CAS loops.
+//! Cold-path coordination uses Condvar, `RwLock`, and fair queuing.
 
 use std::fmt::Debug;
 use std::sync::atomic::{AtomicI64, Ordering};

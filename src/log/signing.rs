@@ -51,7 +51,7 @@ impl Transaction {
     }
 
     /// Deterministic canonical byte representation for hashing.
-    /// Order: sender | recipient | amount | timestamp | correlation_id
+    /// Order: sender | recipient | amount | timestamp | `correlation_id`
     pub fn canonical_bytes(&self) -> Vec<u8> {
         let mut buf = Vec::new();
         buf.extend_from_slice(self.sender.as_bytes());
@@ -108,7 +108,7 @@ impl SigningModule {
         Ok(signature.to_bytes().to_vec())
     }
 
-    /// Sign and return a SignedTransaction.
+    /// Sign and return a `SignedTransaction`.
     pub fn sign_transaction(
         tx: &Transaction,
         signing_key: &SigningKey,

@@ -15,7 +15,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::domain::account::{Account, AccountId, AccountStatus, AccountType};
+use crate::domain::account::{Account, AccountStatus, AccountType};
 use crate::domain::identifier::IdentifierType;
 use crate::domain::journal::{EntryLeg, EntrySide, JournalEntry, Transaction};
 use crate::domain::money::{Currency, Money};
@@ -49,7 +49,7 @@ pub struct AppState {
     pub journal_seq: Mutex<u64>,
     /// RBAC engine — role-based access control
     pub rbac: RwLock<RbacEngine>,
-    /// SurrealDB persistence (None if in-memory mode)
+    /// `SurrealDB` persistence (None if in-memory mode)
     pub store: Option<Arc<SurrealStore>>,
     /// Identity management (Party + Identifier lifecycle)
     pub identity_service: RwLock<IdentityService>,
@@ -87,7 +87,7 @@ impl AppState {
         }
     }
 
-    /// Restore state from SurrealDB on startup.
+    /// Restore state from `SurrealDB` on startup.
     /// Called after store connection is established.
     pub async fn restore_from_store(&self) {
         let Some(ref store) = self.store else { return };
@@ -505,7 +505,7 @@ async fn set_account_status(
         Err(e) => {
             state.circuit_breaker.record_failure();
             return Err(AppError::BadRequest(
-                format!("Invalid status transition: {}", e)
+                format!("Invalid status transition: {e}")
             ));
         }
     }
@@ -850,14 +850,10 @@ async fn audit_report(
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> Result<String, AppError> {
     let from = params.get("from")
-        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
-        .map(|dt| dt.with_timezone(&chrono::Utc))
-        .unwrap_or_else(|| chrono::Utc::now() - chrono::Duration::hours(24));
+        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok()).map_or_else(|| chrono::Utc::now() - chrono::Duration::hours(24), |dt| dt.with_timezone(&chrono::Utc));
     
     let to = params.get("to")
-        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
-        .map(|dt| dt.with_timezone(&chrono::Utc))
-        .unwrap_or_else(chrono::Utc::now);
+        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok()).map_or_else(chrono::Utc::now, |dt| dt.with_timezone(&chrono::Utc));
 
     let chain = state.hash_chain.lock().expect("hash_chain: lock poisoned");
     let report = chain.audit_report(from, to);
@@ -883,7 +879,7 @@ async fn redact_block(
 ) -> Result<Json<serde_json::Value>, AppError> {
     let mut chain = state.hash_chain.lock().expect("hash_chain: lock poisoned");
     let new_head = chain.redact_block(index)
-        .map_err(|e| AppError::BadRequest(e))?;
+        .map_err(AppError::BadRequest)?;
 
     persist_after_mutation(&state);
     Ok(Json(serde_json::json!({
@@ -930,7 +926,7 @@ async fn require_permission(
                 "error": "Permission denied",
                 "required": format!("{:?}", permission),
                 "subject": subject.0.to_string(),
-                "roles": rbac.roles_for(&subject).iter().map(|r| format!("{:?}", r)).collect::<Vec<_>>(),
+                "roles": rbac.roles_for(&subject).iter().map(|r| format!("{r:?}")).collect::<Vec<_>>(),
             })),
         ))
     }
@@ -1003,7 +999,7 @@ async fn bind_role(
 
     let mut rbac = state.rbac.write().expect("rbac: lock poisoned");
     let subject = SubjectId(req.subject_id);
-    rbac.bind(subject.clone(), role);
+    rbac.bind(subject, role);
 
     Ok(Json(serde_json::json!({
         "bound": true,
@@ -1011,7 +1007,7 @@ async fn bind_role(
         "role": req.role,
         "effective_permissions": rbac.permissions_for(&subject)
             .iter()
-            .map(|p| format!("{:?}", p))
+            .map(|p| format!("{p:?}"))
             .collect::<Vec<_>>(),
     })))
 }
@@ -1031,8 +1027,8 @@ async fn get_subject_roles(
 
     Ok(Json(serde_json::json!({
         "subject": id.to_string(),
-        "roles": roles.iter().map(|r| format!("{:?}", r)).collect::<Vec<_>>(),
-        "effective_permissions": perms.iter().map(|p| format!("{:?}", p)).collect::<Vec<_>>(),
+        "roles": roles.iter().map(|r| format!("{r:?}")).collect::<Vec<_>>(),
+        "effective_permissions": perms.iter().map(|p| format!("{p:?}")).collect::<Vec<_>>(),
         "permission_count": perms.len(),
     })))
 }
@@ -1197,7 +1193,7 @@ async fn verify_identifier(
     });
 
     match found {
-        Some((party_id, ident)) => {
+        Some((_party_id, ident)) => {
             drop(svc); // release read lock before acquiring write lock
             // Persist the verification
             let svc = state.identity_service.write().expect("identity_service: lock poisoned");
@@ -1247,7 +1243,7 @@ async fn coa_summary(State(state): State<Arc<AppState>>) -> Json<serde_json::Val
             AccountType::Expense => (CoaCategory::Expense, "5000"),
         };
         let coa_acct = CoaAccount::new(
-            &format!("{}_{}", code, id),
+            &format!("{code}_{id}"),
             &format!("{:?}", acc.account_type),
             cat,
             None,
@@ -1340,7 +1336,7 @@ async fn reverse_journal_entry(
     };
 
     let reversal = original.reverse(new_txn_id, next_seq)
-        .map_err(|e| AppError::BadRequest(format!("Cannot reverse journal entry: {}", e)))?;
+        .map_err(|e| AppError::BadRequest(format!("Cannot reverse journal entry: {e}")))?;
 
     // ━━━ Apply reversal balance updates to accounts ━━━
     for leg in &reversal.legs {
@@ -1349,14 +1345,14 @@ async fn reverse_journal_entry(
                 if let Err(e) = state.account_service.perform_debit(leg.account_id, leg.amount_cents) {
                     eprintln!("CRITICAL: Reversal debit failed on account {} for entry {}: {:?}",
                         leg.account_id, reversal.id, e);
-                    return Err(AppError::BadRequest(format!("Reversal debit failed: {:?}", e)));
+                    return Err(AppError::BadRequest(format!("Reversal debit failed: {e:?}")));
                 }
             }
             EntrySide::Credit => {
                 if let Err(e) = state.account_service.perform_credit(leg.account_id, leg.amount_cents) {
                     eprintln!("CRITICAL: Reversal credit failed on account {} for entry {}: {:?}",
                         leg.account_id, reversal.id, e);
-                    return Err(AppError::BadRequest(format!("Reversal credit failed: {:?}", e)));
+                    return Err(AppError::BadRequest(format!("Reversal credit failed: {e:?}")));
                 }
             }
         }
@@ -1399,7 +1395,7 @@ struct CreateTransactionRequest {
 }
 
 async fn create_transaction(
-    State(state): State<Arc<AppState>>,
+    State(_state): State<Arc<AppState>>,
     Json(req): Json<CreateTransactionRequest>,
 ) -> Json<serde_json::Value> {
     let txn = Transaction::new(&req.reference);
@@ -1469,7 +1465,7 @@ async fn coa_by_code(
             AccountType::Expense => (CoaCategory::Expense, "5000"),
         };
         let coa_acct = CoaAccount::new(
-            &format!("{}_{}", code_prefix, _id),
+            &format!("{code_prefix}_{_id}"),
             &format!("{:?}", acc.account_type),
             cat,
             None,
@@ -1496,7 +1492,7 @@ async fn coa_deactivate(
     match state.account_service.set_status(id, AccountStatus::Closed) {
         Ok(true) => {
             let mut chain = state.hash_chain.lock().expect("hash_chain: lock poisoned");
-            chain.append(&format!("coa_deactivate:{}", id));
+            chain.append(&format!("coa_deactivate:{id}"));
             drop(chain);
             persist_after_mutation(&state);
             Ok(Json(serde_json::json!({
@@ -1506,7 +1502,7 @@ async fn coa_deactivate(
         }
         Ok(false) => Err(AppError::NotFound),
         Err(e) => Err(AppError::BadRequest(
-            format!("Cannot close account: {}", e)
+            format!("Cannot close account: {e}")
         )),
     }
 }

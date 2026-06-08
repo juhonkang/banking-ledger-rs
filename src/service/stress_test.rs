@@ -8,7 +8,6 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::domain::account::Account;
-use crate::log::hash_chain::HashChain;
 use crate::log::ring_buffer::{LatencyHistogram, LatencyTimer, RingBuffer};
 
 /// Stress test profile configuration.
@@ -111,7 +110,7 @@ pub fn stress_ring_buffer<T: Clone + Send + Sync + 'static>(
                     }
                 }
 
-                let timer = LatencyTimer::start(&hist);
+                let _timer = LatencyTimer::start(&hist);
                 let val = gen(base + i);
                 match buf.try_push(val) {
                     Ok(_) => produced += 1,
@@ -177,8 +176,8 @@ pub fn stress_account_concurrent(workers: usize, ops_per_worker: usize) -> Stres
         handles.push(std::thread::spawn(move || {
             let mut operations = 0usize;
             for _ in 0..ops_per_worker {
-                let timer = LatencyTimer::start(&hist);
-                let mut a = acc.lock().unwrap();
+                let _timer = LatencyTimer::start(&hist);
+                let a = acc.lock().unwrap();
                 let _ = a.credit(1);
                 let _ = a.debit(1);
                 drop(a);

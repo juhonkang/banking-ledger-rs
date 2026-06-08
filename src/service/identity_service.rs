@@ -1,6 +1,6 @@
 //! Identity Service — manages Party and Identifier lifecycle.
 //! Key invariant: Identifiers are versioned, never overwritten.
-//! PartyId is immutable. One Party can own multiple accounts.
+//! `PartyId` is immutable. One Party can own multiple accounts.
 
 use std::collections::HashMap;
 use std::sync::RwLock;
