@@ -154,19 +154,20 @@ impl JournalEntry {
         }
     }
 
-    /// Verify this entry is still balanced (tamper detection)
+    /// Verify this entry is still balanced (tamper detection).
+    /// Uses i128 summation to prevent silent overflow.
     pub fn verify_balance(&self) -> bool {
-        let debits: i64 = self
+        let debits: i128 = self
             .legs
             .iter()
             .filter(|l| l.side == EntrySide::Debit)
-            .map(|l| l.amount_cents)
+            .map(|l| i128::from(l.amount_cents))
             .sum();
-        let credits: i64 = self
+        let credits: i128 = self
             .legs
             .iter()
             .filter(|l| l.side == EntrySide::Credit)
-            .map(|l| l.amount_cents)
+            .map(|l| i128::from(l.amount_cents))
             .sum();
         debits == credits && debits > 0
     }
