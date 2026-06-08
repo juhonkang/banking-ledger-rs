@@ -316,6 +316,175 @@ pub fn batch_consume<T: Debug + Clone>(buffer: &RingBuffer<T>, batch_size: usize
     batch
 }
 
+// ━━━ Latency Histogram ━━━
+
+/// HDR-style latency histogram for ring buffer operations.
+/// Tracks operation latencies with exponential buckets for percentile calculation.
+#[derive(Debug)]
+pub struct LatencyHistogram {
+    /// Counters for each latency bucket (powers of 2): 1µs, 2µs, 4µs, ..., 2^20 µs (~1s)
+    buckets: Box<[AtomicUsize]>,
+    /// Total count of all samples
+    total_count: AtomicUsize,
+    /// Sum of all latencies (in nanoseconds) for mean calculation
+    total_ns: AtomicUsize,
+    /// Minimum observed latency (nanoseconds)
+    min_ns: AtomicUsize,
+    /// Maximum observed latency (nanoseconds)
+    max_ns: AtomicUsize,
+    /// Total number of buckets
+    num_buckets: usize,
+}
+
+impl LatencyHistogram {
+    /// Create a histogram with `num_buckets` exponential buckets (powers of 2).
+    /// Default: 20 buckets covering 1µs to ~1 second.
+    pub fn new(num_buckets: usize) -> Self {
+        let mut buckets = Vec::with_capacity(num_buckets);
+        for _ in 0..num_buckets {
+            buckets.push(AtomicUsize::new(0));
+        }
+        Self {
+            buckets: buckets.into_boxed_slice(),
+            total_count: AtomicUsize::new(0),
+            total_ns: AtomicUsize::new(0),
+            min_ns: AtomicUsize::new(usize::MAX),
+            max_ns: AtomicUsize::new(0),
+            num_buckets,
+        }
+    }
+
+    /// Record an operation with its latency in nanoseconds.
+    pub fn record(&self, latency_ns: u64) {
+        let ns = latency_ns as usize;
+        let bucket = self.bucket_for(ns);
+        self.buckets[bucket].fetch_add(1, Ordering::Relaxed);
+        self.total_count.fetch_add(1, Ordering::Relaxed);
+        self.total_ns.fetch_add(ns, Ordering::Relaxed);
+
+        // Update min (CAS loop)
+        let mut current_min = self.min_ns.load(Ordering::Relaxed);
+        while ns < current_min {
+            match self.min_ns.compare_exchange_weak(
+                current_min, ns,
+                Ordering::Release, Ordering::Relaxed,
+            ) {
+                Ok(_) => break,
+                Err(actual) => current_min = actual,
+            }
+        }
+
+        // Update max (CAS loop)
+        let mut current_max = self.max_ns.load(Ordering::Relaxed);
+        while ns > current_max {
+            match self.max_ns.compare_exchange_weak(
+                current_max, ns,
+                Ordering::Release, Ordering::Relaxed,
+            ) {
+                Ok(_) => break,
+                Err(actual) => current_max = actual,
+            }
+        }
+    }
+
+    /// Map nanoseconds to bucket index (powers of 2: 1µs, 2µs, 4µs, ...)
+    fn bucket_for(&self, latency_ns: usize) -> usize {
+        // Min bucket: 1000ns (1µs)
+        let micros = latency_ns / 1_000;
+        if micros == 0 {
+            return 0;
+        }
+        let bucket = (usize::BITS - micros.leading_zeros()) as usize;
+        bucket.min(self.num_buckets - 1)
+    }
+
+    /// Total sample count
+    pub fn count(&self) -> usize {
+        self.total_count.load(Ordering::Relaxed)
+    }
+
+    /// Mean latency in nanoseconds. Returns None if no samples.
+    pub fn mean_ns(&self) -> Option<u64> {
+        let count = self.total_count.load(Ordering::Relaxed);
+        if count == 0 {
+            return None;
+        }
+        let total = self.total_ns.load(Ordering::Relaxed);
+        Some((total / count) as u64)
+    }
+
+    /// Minimum latency in nanoseconds. Returns None if no samples.
+    pub fn min_ns(&self) -> Option<u64> {
+        let v = self.min_ns.load(Ordering::Relaxed);
+        if v == usize::MAX { None } else { Some(v as u64) }
+    }
+
+    /// Maximum latency in nanoseconds. Returns None if no samples.
+    pub fn max_ns(&self) -> Option<u64> {
+        let v = self.max_ns.load(Ordering::Relaxed);
+        if v == 0 { None } else { Some(v as u64) }
+    }
+
+    /// Approximate percentile. Linear interpolation between bucket boundaries.
+    /// `pct` should be 0.0-100.0.
+    pub fn percentile(&self, pct: f64) -> Option<u64> {
+        if pct < 0.0 || pct > 100.0 {
+            return None;
+        }
+        let total = self.total_count.load(Ordering::Relaxed);
+        if total == 0 {
+            return None;
+        }
+        let target = ((pct / 100.0) * total as f64).ceil() as usize;
+        let mut cumulative = 0usize;
+        for (i, bucket) in self.buckets.iter().enumerate() {
+            cumulative += bucket.load(Ordering::Relaxed);
+            if cumulative >= target {
+                // Return upper bound of this bucket (in ns)
+                if i == 0 {
+                    return Some(1_000); // 1µs
+                }
+                return Some((1u64 << i) * 1_000);
+            }
+        }
+        // Fallback: max bucket
+        Some((1u64 << (self.num_buckets - 1)) * 1_000)
+    }
+
+    /// Reset all counters.
+    pub fn reset(&self) {
+        for bucket in self.buckets.iter() {
+            bucket.store(0, Ordering::Relaxed);
+        }
+        self.total_count.store(0, Ordering::Relaxed);
+        self.total_ns.store(0, Ordering::Relaxed);
+        self.min_ns.store(usize::MAX, Ordering::Relaxed);
+        self.max_ns.store(0, Ordering::Relaxed);
+    }
+}
+
+/// Timer helper for recording latency of an operation.
+pub struct LatencyTimer<'a> {
+    histogram: &'a LatencyHistogram,
+    start: Instant,
+}
+
+impl<'a> LatencyTimer<'a> {
+    pub fn start(histogram: &'a LatencyHistogram) -> Self {
+        Self {
+            histogram,
+            start: Instant::now(),
+        }
+    }
+
+    /// Record the elapsed time and return it.
+    pub fn stop(self) -> u64 {
+        let elapsed = self.start.elapsed().as_nanos() as u64;
+        self.histogram.record(elapsed);
+        elapsed
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -417,5 +586,76 @@ mod tests {
         .unwrap();
 
         assert!(!result); // Should time out, not find data
+    }
+
+    // ━━━ Latency Histogram Tests ━━━
+
+    #[test]
+    fn test_histogram_empty() {
+        let h = LatencyHistogram::new(20);
+        assert_eq!(h.count(), 0);
+        assert_eq!(h.mean_ns(), None);
+        assert_eq!(h.min_ns(), None);
+        assert_eq!(h.max_ns(), None);
+        assert_eq!(h.percentile(50.0), None);
+    }
+
+    #[test]
+    fn test_histogram_single_record() {
+        let h = LatencyHistogram::new(20);
+        h.record(5_000); // 5µs
+        assert_eq!(h.count(), 1);
+        assert_eq!(h.mean_ns(), Some(5_000));
+        assert_eq!(h.min_ns(), Some(5_000));
+        assert_eq!(h.max_ns(), Some(5_000));
+    }
+
+    #[test]
+    fn test_histogram_percentiles() {
+        let h = LatencyHistogram::new(20);
+        // Record: 10 × 1µs, 20 × 10µs, 30 × 100µs, 40 × 1ms
+        for _ in 0..10 { h.record(1_000); }
+        for _ in 0..20 { h.record(10_000); }
+        for _ in 0..30 { h.record(100_000); }
+        for _ in 0..40 { h.record(1_000_000); }
+        // Total: 100 records
+        assert_eq!(h.count(), 100);
+        // p50 should be around 100µs (50th record falls in 100µs bucket)
+        let p50 = h.percentile(50.0).unwrap();
+        assert!(p50 >= 1_000 && p50 <= 1_000_000);
+        // p99 should be 1ms bucket
+        let p99 = h.percentile(99.0).unwrap();
+        assert!(p99 >= 1_000_000);
+    }
+
+    #[test]
+    fn test_histogram_reset() {
+        let h = LatencyHistogram::new(20);
+        h.record(42_000);
+        assert_eq!(h.count(), 1);
+        h.reset();
+        assert_eq!(h.count(), 0);
+        assert_eq!(h.mean_ns(), None);
+    }
+
+    #[test]
+    fn test_latency_timer() {
+        let h = LatencyHistogram::new(20);
+        {
+            let timer = LatencyTimer::start(&h);
+            std::thread::sleep(Duration::from_micros(500));
+            let elapsed = timer.stop();
+            assert!(elapsed >= 400_000); // at least 400µs
+        }
+        assert_eq!(h.count(), 1);
+        assert!(h.mean_ns().unwrap() >= 400_000);
+    }
+
+    #[test]
+    fn test_histogram_negative_percentile_returns_none() {
+        let h = LatencyHistogram::new(20);
+        h.record(1_000);
+        assert_eq!(h.percentile(-1.0), None);
+        assert_eq!(h.percentile(101.0), None);
     }
 }

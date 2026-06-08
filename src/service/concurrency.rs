@@ -237,9 +237,6 @@ impl Default for AnalyticsCounter {
 // ━━━ Fair Queuing ━━━
 // Rust's std::sync::Mutex is unfair by default on Linux (pthread mutex).
 // For fair queuing, use tokio::sync::Mutex with FIFO ordering, or parking_lot::FairMutex.
-
-/// Fair mutex wrapper using parking_lot's fair mutex (if available)
-/// Falls back to std Mutex with explicit fairness note.
 // FairMutex available with `parking_lot` feature:
 // pub type FairMutex<T> = parking_lot::FairMutex<T>;
 
