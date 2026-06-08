@@ -36,20 +36,24 @@ pub struct EntryLeg {
 }
 
 impl EntryLeg {
+    /// Create a debit leg. Panics in debug if amount <= 0.
     pub fn debit(account_id: AccountId, amount_cents: i64) -> Self {
+        debug_assert!(amount_cents > 0, "EntryLeg::debit requires amount_cents > 0, got {}", amount_cents);
         Self {
             account_id,
             side: EntrySide::Debit,
-            amount_cents,
+            amount_cents: amount_cents.max(0),
             amount: None,
         }
     }
 
+    /// Create a credit leg. Panics in debug if amount <= 0.
     pub fn credit(account_id: AccountId, amount_cents: i64) -> Self {
+        debug_assert!(amount_cents > 0, "EntryLeg::credit requires amount_cents > 0, got {}", amount_cents);
         Self {
             account_id,
             side: EntrySide::Credit,
-            amount_cents,
+            amount_cents: amount_cents.max(0),
             amount: None,
         }
     }

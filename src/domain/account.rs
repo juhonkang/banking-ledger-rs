@@ -301,6 +301,12 @@ impl Account {
             return Err(HoldError::InvalidAmount);
         }
 
+        // Prevent holds on non-Open accounts
+        let status = self.status();
+        if status != AccountStatus::Open {
+            return Err(HoldError::AccountNotOpen(status));
+        }
+
         loop {
             let available = self.available_balance.load(Ordering::Acquire);
             if available < amount_cents {
