@@ -22,6 +22,16 @@ pub enum EntrySide {
     Credit,
 }
 
+impl EntrySide {
+    /// Return the opposite side: Debit → Credit, Credit → Debit.
+    pub fn counterpart(self) -> Self {
+        match self {
+            Self::Debit => Self::Credit,
+            Self::Credit => Self::Debit,
+        }
+    }
+}
+
 /// A single leg of a double-entry — one side of the equation.
 /// A `JournalEntry` always has at least 2 legs (one debit, one credit).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -268,3 +278,21 @@ impl std::fmt::Display for JournalError {
 }
 
 impl std::error::Error for JournalError {}
+
+/// Compute the net position for a specific account from a set of legs.
+///
+/// Returns (total_credits, total_debits, net) where net = credits - debits.
+/// Positive net means the account has a net credit position.
+pub fn net_position(legs: &[EntryLeg], account_id: AccountId) -> (i128, i128, i128) {
+    let credits: i128 = legs
+        .iter()
+        .filter(|l| l.account_id == account_id && l.side == EntrySide::Credit)
+        .map(|l| i128::from(l.amount_cents))
+        .sum();
+    let debits: i128 = legs
+        .iter()
+        .filter(|l| l.account_id == account_id && l.side == EntrySide::Debit)
+        .map(|l| i128::from(l.amount_cents))
+        .sum();
+    (credits, debits, credits - debits)
+}

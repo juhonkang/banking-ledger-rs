@@ -23,6 +23,8 @@ mod ledger_service_test;
 pub mod production;
 pub mod resilience;
 #[cfg(test)]
+mod resilience_coverage_tests;
+#[cfg(test)]
 mod resilience_edge_tests;
 pub mod saga;
 #[cfg(test)]
