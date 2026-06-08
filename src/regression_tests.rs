@@ -14,7 +14,7 @@
 
 #[cfg(test)]
 mod regression_tests {
-    use std::sync::Arc;
+    
     use uuid::Uuid;
 
     use crate::domain::account::{Account, AccountStatus, AccountType};

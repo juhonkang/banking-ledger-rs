@@ -90,7 +90,7 @@ mod tests {
             coa_version: 1,
         };
         // Self-reference where parent_id == id
-        let self_ref = CoaAccount {
+        let _self_ref = CoaAccount {
             id: uuid::Uuid::now_v7(),
             parent_id: None, // we can't easily test this with parent_id pointing to self
             ..c.clone()

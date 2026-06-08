@@ -651,7 +651,7 @@ mod tests {
     fn test_bulkhead_limits_concurrency() {
         let bh = Bulkhead::new(2);
         let g1 = bh.try_acquire().unwrap();
-        let g2 = bh.try_acquire().unwrap();
+        let _g2 = bh.try_acquire().unwrap();
         assert!(bh.try_acquire().is_err()); // Full
 
         drop(g1);

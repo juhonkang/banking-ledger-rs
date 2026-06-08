@@ -7,9 +7,9 @@ mod exhaustive_edge_tests {
     use std::thread;
     use std::time::Duration;
 
-    use crate::domain::account::{Account, AccountStatus, AccountType, CreditError, DebitError, HoldError};
+    use crate::domain::account::{Account, AccountType, CreditError, DebitError, HoldError};
     use crate::domain::journal::{EntryLeg, JournalEntry, JournalError, Transaction};
-    use crate::domain::money::{Currency, Money, MoneyError, RoundingMode};
+    use crate::domain::money::{Currency, Money, RoundingMode};
     use crate::domain::coa::{ChartOfAccounts, CoaAccount, CoaCategory};
     use crate::log::hash_chain::HashChain;
     use crate::log::ring_buffer::RingBuffer;

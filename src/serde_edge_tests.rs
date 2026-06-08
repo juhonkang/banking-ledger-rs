@@ -3,7 +3,7 @@
 
 #[cfg(test)]
 mod serde_edge_tests {
-    use rust_decimal::Decimal;
+    
     use crate::domain::money::{Currency, Money};
 
     #[test]

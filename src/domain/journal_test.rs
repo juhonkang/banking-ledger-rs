@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod tests {
-    use crate::domain::account::{AccountId, AccountType};
+    use crate::domain::account::AccountId;
     use crate::domain::journal::{EntryLeg, JournalEntry, JournalError};
 
     fn make_account_id() -> AccountId {
@@ -124,7 +124,7 @@ mod tests {
     #[test]
     fn test_zero_amounts_rejected() {
         let a = make_account_id();
-        let b = make_account_id();
+        let _b = make_account_id();
         // EntryLeg with zero amount panics in debug (debug_assert > 0)
         // Test MissingSide via single-leg entry
         let legs = vec![EntryLeg::debit(a, 1)];

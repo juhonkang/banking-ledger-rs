@@ -3,8 +3,8 @@
 
 #[cfg(test)]
 mod audit_bug_regression_tests {
-    use crate::domain::account::{Account, AccountType, DebitError, HoldError};
-    use std::sync::atomic::Ordering;
+    use crate::domain::account::{Account, AccountType, DebitError};
+    
     use std::sync::Arc;
 
     // ━━━ BUG #1: credit() has transient window between two atomics ━━━
@@ -88,8 +88,8 @@ mod audit_bug_regression_tests {
         let handle = std::thread::spawn(move || {
             // Rapidly freeze and unfreeze
             for _ in 0..1000 {
-                acc_clone.set_status(crate::domain::account::AccountStatus::Frozen);
-                acc_clone.set_status(crate::domain::account::AccountStatus::Open);
+                let _ = acc_clone.set_status(crate::domain::account::AccountStatus::Frozen);
+                let _ = acc_clone.set_status(crate::domain::account::AccountStatus::Open);
             }
         });
 

@@ -163,8 +163,8 @@ mod tests {
 
     #[test]
     fn test_idempotent_handler_skip_duplicate() {
-        let mut call_count = std::sync::atomic::AtomicUsize::new(0);
-        let handler = IdempotentHandler::new(|tx_id: &str| {
+        let call_count = std::sync::atomic::AtomicUsize::new(0);
+        let handler = IdempotentHandler::new(|_tx_id: &str| {
             call_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             Ok(())
         });

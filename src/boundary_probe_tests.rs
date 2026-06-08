@@ -3,16 +3,15 @@
 
 #[cfg(test)]
 mod boundary_probe_tests {
-    use std::sync::Arc;
+    
     use std::time::Duration;
 
     use crate::service::resilience::{
-        Bulkhead, CircuitBreaker, GoldenSignals, IncidentDetector, IncidentStatus,
-        ServiceLevelObjective, TokenBucket, exponential_backoff, retry_with_backoff,
+        Bulkhead, CircuitBreaker, GoldenSignals, TokenBucket, exponential_backoff, retry_with_backoff,
     };
-    use crate::domain::money::{Currency, Money, RoundingMode};
-    use crate::domain::account::{Account, AccountType, AccountStatus};
-    use crate::domain::journal::{EntryLeg, JournalEntry, EntrySide};
+    use crate::domain::money::{Currency, Money};
+    
+    use crate::domain::journal::{EntryLeg, JournalEntry};
     use crate::domain::coa::{ChartOfAccounts, CoaAccount, CoaCategory};
     use rust_decimal_macros::dec;
 

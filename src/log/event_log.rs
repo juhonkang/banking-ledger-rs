@@ -519,7 +519,7 @@ mod tests {
             .into_iter()
             .cloned()
             .collect();
-        let model = ReadModel::rebuild(&events);
+        let _model = ReadModel::rebuild(&events);
         // Note: the event types have account_id in aggregate_id, not payload
         // This test verifies the replay pipeline works
         assert_eq!(events.len(), 2);

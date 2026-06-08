@@ -567,7 +567,7 @@ mod tests {
     fn test_wait_strategy_spin() {
         // Verifies spin doesn't block forever on empty
         let rb = RingBuffer::<i32>::new(4);
-        let started = std::time::Instant::now();
+        let _started = std::time::Instant::now();
 
         // Spin for at most 100ms then give up
         let result = std::thread::spawn(move || {

@@ -234,7 +234,7 @@ impl AccountExt for Account {
 mod tests {
     use super::*;
     use crate::domain::account::AccountType;
-    use crate::domain::money::Currency;
+    
 
     #[test]
     fn test_hashchain_ext_sign_and_append() {
@@ -269,7 +269,7 @@ mod tests {
 
     #[test]
     fn test_journal_ext_net_position() {
-        use crate::domain::journal::{EntryLeg, EntrySide, JournalEntry, TransactionId};
+        use crate::domain::journal::{EntryLeg, JournalEntry};
         
         let txn_id = Uuid::now_v7();
         let acc_a = Uuid::now_v7();

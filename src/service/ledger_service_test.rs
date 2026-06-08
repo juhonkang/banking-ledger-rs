@@ -4,7 +4,7 @@ mod tests {
     use std::sync::{Arc, RwLock};
 
     use crate::domain::account::{Account, AccountId, AccountType};
-    use crate::domain::journal::EntrySide;
+    
     use crate::service::ledger_service::LedgerService;
 
     fn setup_accounts() -> (

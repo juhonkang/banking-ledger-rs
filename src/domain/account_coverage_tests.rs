@@ -4,7 +4,7 @@
 #[cfg(test)]
 mod tests {
     use crate::domain::account::{Account, AccountType, HoldError, DebitError, AccountStatus};
-    use crate::domain::money::Currency;
+    
     use std::sync::Arc;
     use std::thread;
 

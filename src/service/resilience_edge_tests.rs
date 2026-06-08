@@ -3,7 +3,7 @@
 
 #[cfg(test)]
 mod resilience_edge_tests {
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
     use std::sync::Arc;
 
     use crate::service::resilience::{

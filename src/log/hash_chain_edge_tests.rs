@@ -7,7 +7,7 @@ mod hash_chain_edge_tests {
     use chrono::Utc;
 
     use crate::log::hash_chain::{
-        HashChain, HashLink, SignedTransaction, ChainProof,
+        HashChain, SignedTransaction,
         hmac_sign, hmac_verify, RedactError,
     };
 
@@ -56,7 +56,7 @@ mod hash_chain_edge_tests {
         let mut chain = HashChain::new(test_key());
         chain.append("tx1");
         chain.blocks[1].hash = "deadbeef".repeat(8); // 64 hex chars
-        let (valid, tampered) = chain.verify_chain();
+        let (valid, _tampered) = chain.verify_chain();
         assert!(!valid);
     }
 
