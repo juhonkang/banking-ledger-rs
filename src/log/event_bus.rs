@@ -60,8 +60,9 @@ pub struct BusMessage {
 
 impl PartitionedEventBus {
     pub fn new(num_partitions: usize) -> Self {
+        let num = num_partitions.max(1); // Minimum 1 partition
         Self {
-            partitions: (0..num_partitions)
+            partitions: (0..num)
                 .map(|_| Mutex::new(VecDeque::new()))
                 .collect(),
             next_offset: AtomicU64::new(0),

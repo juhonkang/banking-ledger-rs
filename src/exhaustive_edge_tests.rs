@@ -149,11 +149,10 @@ mod exhaustive_edge_tests {
     #[test]
     fn test_transaction_reject_then_commit() {
         let mut txn = Transaction::new("TST-002");
-        txn.reject();
-        // Rejected transactions should not be committable
-        txn.commit(); // This just overwrites status
-        // Documenting: our impl doesn't prevent this
-        assert!(matches!(txn.status, crate::domain::journal::TransactionStatus::Committed));
+        assert!(txn.reject());
+        // Rejected transactions CANNOT be committed — returns false
+        assert!(!txn.commit());
+        assert!(matches!(txn.status, crate::domain::journal::TransactionStatus::Rejected));
     }
 
     // ═══════════════════════════════════════════

@@ -203,14 +203,26 @@ impl Transaction {
         }
     }
 
-    pub fn commit(&mut self) {
+    /// Commit this transaction. Only valid for Pending transactions.
+    /// Returns false if already in a terminal state.
+    pub fn commit(&mut self) -> bool {
+        if self.status != TransactionStatus::Pending {
+            return false;
+        }
         self.status = TransactionStatus::Committed;
         self.completed_at = Some(Utc::now());
+        true
     }
 
-    pub fn reject(&mut self) {
+    /// Reject this transaction. Only valid for Pending transactions.
+    /// Returns false if already in a terminal state.
+    pub fn reject(&mut self) -> bool {
+        if self.status != TransactionStatus::Pending {
+            return false;
+        }
         self.status = TransactionStatus::Rejected;
         self.completed_at = Some(Utc::now());
+        true
     }
 }
 
