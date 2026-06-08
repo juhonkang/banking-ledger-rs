@@ -161,7 +161,7 @@ impl TransferCondition {
     /// Credit the account and notify waiting threads.
     pub fn credit_and_notify(&self, amount: i64) -> i64 {
         let mut bal = self.balance.lock().unwrap();
-        *bal += amount;
+        *bal = bal.checked_add(amount).expect("credit overflow in TransferCondition");
         self.condvar.notify_all();
         *bal
     }
@@ -169,7 +169,7 @@ impl TransferCondition {
     /// Credit one specific waiter
     pub fn credit_and_notify_one(&self, amount: i64) -> i64 {
         let mut bal = self.balance.lock().unwrap();
-        *bal += amount;
+        *bal = bal.checked_add(amount).expect("credit overflow in TransferCondition");
         self.condvar.notify_one();
         *bal
     }

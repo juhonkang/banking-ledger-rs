@@ -174,7 +174,7 @@ impl SagaOrchestrator {
             return Err(SagaError::SagaNotActive(instance.status));
         }
 
-        let def = self.definitions.get(&instance.definition_name).unwrap();
+        let def = self.definitions.get(&instance.definition_name).expect("saga definition removed between calls — concurrent modification");
 
         if instance.current_step >= def.steps.len() {
             return Err(SagaError::AllStepsCompleted);
@@ -191,7 +191,7 @@ impl SagaOrchestrator {
             .get_mut(&saga_id)
             .ok_or(SagaError::SagaNotFound(saga_id))?;
 
-        let def = self.definitions.get(&instance.definition_name).unwrap();
+        let def = self.definitions.get(&instance.definition_name).expect("saga definition removed between calls — concurrent modification");
         let step_index = instance.current_step;
 
         instance.step_completed(step_index);
@@ -221,7 +221,7 @@ impl SagaOrchestrator {
 
         instance.start_compensating(error);
 
-        let def = self.definitions.get(&instance.definition_name).unwrap();
+        let def = self.definitions.get(&instance.definition_name).expect("saga definition removed between calls — concurrent modification");
 
         // Collect compensations for completed steps in REVERSE order
         let compensations: Vec<SagaAction> = instance
