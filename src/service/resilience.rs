@@ -160,9 +160,15 @@ pub fn exponential_backoff(attempt: u32, base_ms: u64, max_ms: u64) -> Duration 
     let exponential = base_ms * 2u64.pow(attempt);
     let capped = exponential.min(max_ms);
 
-    // Add jitter: ±25%
-    let jitter = (capped as f64 * 0.25 * (rand::random::<f64>() * 2.0 - 1.0)) as u64;
-    Duration::from_millis(capped + jitter)
+    // Add jitter: ±25% of the capped delay
+    // Use i64 for signed jitter calculation to avoid UB from f64→u64 on negatives
+    let jitter_i64 = (capped as f64 * 0.25 * (rand::random::<f64>() * 2.0 - 1.0)) as i64;
+    let jitter_abs = jitter_i64.unsigned_abs();
+    if jitter_i64 < 0 {
+        Duration::from_millis(capped.saturating_sub(jitter_abs))
+    } else {
+        Duration::from_millis(capped.saturating_add(jitter_abs))
+    }
 }
 
 /// Retry a fallible operation with exponential backoff.
