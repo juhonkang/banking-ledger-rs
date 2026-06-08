@@ -1276,7 +1276,8 @@ async fn reverse_journal_entry(
         *seq
     };
 
-    let reversal = original.reverse(new_txn_id, next_seq);
+    let reversal = original.reverse(new_txn_id, next_seq)
+        .map_err(|e| AppError::BadRequest(format!("Cannot reverse journal entry: {}", e)))?;
 
     let mut chain = state.hash_chain.lock().expect("hash_chain: lock poisoned");
     let block_data = serde_json::json!({

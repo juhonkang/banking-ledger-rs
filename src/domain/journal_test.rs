@@ -80,7 +80,7 @@ mod tests {
         ];
 
         let original = JournalEntry::new(uuid::Uuid::now_v7(), 1, legs, "Original").unwrap();
-        let reversal = original.reverse(uuid::Uuid::now_v7(), 2);
+        let reversal = original.reverse(uuid::Uuid::now_v7(), 2).expect("valid entry reversal must succeed");
 
         // Should be balanced
         assert!(reversal.verify_balance());

@@ -128,7 +128,8 @@ impl JournalEntry {
 
     /// Create a reversing entry (e.g., to correct an error).
     /// Flips all debits to credits and vice versa.
-    pub fn reverse(&self, new_transaction_id: TransactionId, sequence_number: u64) -> Self {
+    /// Returns Err if the original entry is invalid (unbalanced).
+    pub fn reverse(&self, new_transaction_id: TransactionId, sequence_number: u64) -> Result<Self, JournalError> {
         let reversed_legs: Vec<EntryLeg> = self
             .legs
             .iter()
@@ -143,15 +144,14 @@ impl JournalEntry {
             })
             .collect();
 
-        JournalEntry {
-            id: Uuid::now_v7(),
-            transaction_id: new_transaction_id,
+        let mut reversal = Self::new(
+            new_transaction_id,
             sequence_number,
-            legs: reversed_legs,
-            description: format!("REVERSAL of {}", self.id),
-            recorded_at: Utc::now(),
-            reverses: Some(self.id),
-        }
+            reversed_legs,
+            &format!("REVERSAL of {}", self.id),
+        )?;
+        reversal.reverses = Some(self.id);
+        Ok(reversal)
     }
 
     /// Verify this entry is still balanced (tamper detection).
