@@ -5,10 +5,14 @@ mod account_service_exhaustive_test;
 #[cfg(feature = "full")]
 pub mod advanced;
 pub mod choreography;
+#[cfg(test)]
+mod choreography_coverage_tests;
 #[cfg(feature = "full")]
 pub mod concurrency;
 pub mod distributed_state;
 pub mod idempotency;
+#[cfg(test)]
+mod idempotency_coverage_tests;
 pub mod identity_service;
 #[cfg(test)]
 mod identity_service_test;

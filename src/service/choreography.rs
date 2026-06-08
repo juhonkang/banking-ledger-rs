@@ -222,10 +222,10 @@ impl ChoreographyAccountService {
             });
         }
 
-        let balance = self.balances.get(&event.from_account);
-        match balance {
-            Some(b) if *b >= event.amount => {
-                let new_balance = *b - event.amount;
+        let current_balance = self.balances.get(&event.from_account).map(|b| *b);
+        match current_balance {
+            Some(b) if b >= event.amount => {
+                let new_balance = b - event.amount;
                 self.balances.insert(event.from_account.clone(), new_balance);
                 self.processed_debits.insert(event.correlation_id, ());
                 Ok(AccountDebitedEvent {
@@ -272,10 +272,10 @@ impl ChoreographyAccountService {
             });
         }
 
-        let balance = self.balances.get(to_account);
-        match balance {
+        let current_balance = self.balances.get(to_account).map(|b| *b);
+        match current_balance {
             Some(b) => {
-                let new_balance = *b + event.amount;
+                let new_balance = b + event.amount;
                 self.balances.insert(to_account.to_string(), new_balance);
                 self.processed_credits.insert(event.correlation_id, ());
                 Ok(AccountCreditedEvent {
