@@ -62,7 +62,7 @@ mod tests {
     #[test]
     fn test_frozen_account_rejects_debit() {
         let acc = Account::new(AccountType::Asset, "USD", 100_000, None);
-        acc.set_status(AccountStatus::Frozen);
+        acc.set_status_unchecked(AccountStatus::Frozen);
         let result = acc.debit(10_000);
         assert!(matches!(
             result,
@@ -73,7 +73,7 @@ mod tests {
     #[test]
     fn test_frozen_account_rejects_credit() {
         let acc = Account::new(AccountType::Asset, "USD", 100_000, None);
-        acc.set_status(AccountStatus::Frozen);
+        acc.set_status_unchecked(AccountStatus::Frozen);
         let result = acc.credit(10_000);
         assert!(matches!(
             result,
@@ -84,7 +84,7 @@ mod tests {
     #[test]
     fn test_closed_account_rejects_all() {
         let acc = Account::new(AccountType::Asset, "USD", 100_000, None);
-        acc.set_status(AccountStatus::Closed);
+        acc.set_status_unchecked(AccountStatus::Closed);
         assert!(acc.debit(1000).is_err());
         assert!(acc.credit(1000).is_err());
     }
@@ -92,9 +92,9 @@ mod tests {
     #[test]
     fn test_reopen_frozen_account() {
         let acc = Account::new(AccountType::Asset, "USD", 100_000, None);
-        acc.set_status(AccountStatus::Frozen);
+        acc.set_status_unchecked(AccountStatus::Frozen);
         assert!(acc.debit(1000).is_err());
-        acc.set_status(AccountStatus::Open);
+        acc.set_status_unchecked(AccountStatus::Open);
         assert!(acc.debit(1000).is_ok());
     }
 

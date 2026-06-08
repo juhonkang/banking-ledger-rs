@@ -178,7 +178,7 @@ mod boundary_probe_tests {
         // 2^32 * base_ms could overflow u64
         let dur = exponential_backoff(32, 100, 5000);
         // Should be capped at max_ms
-        assert!(dur.as_millis() <= 5500); // max(5000) + jitter 25%
+        assert!(dur.as_millis() <= 6250); // max(5000) + jitter 25% = 6250
     }
 
     // ━━━ COA ━━━

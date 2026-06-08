@@ -148,13 +148,13 @@ mod exhaustive_account_service_tests {
     #[test]
     fn test_set_status_not_found() {
         let (svc, _) = setup(1000);
-        assert!(!svc.set_status(AccountId::now_v7(), AccountStatus::Closed));
+        assert_eq!(svc.set_status(AccountId::now_v7(), AccountStatus::Closed), Ok(false));
     }
 
     #[test]
     fn test_set_status_freeze_rejects_debit() {
         let (svc, id) = setup(1000);
-        assert!(svc.set_status(id, AccountStatus::Frozen));
+        assert_eq!(svc.set_status(id, AccountStatus::Frozen), Ok(true));
         let err = svc.perform_debit(id, 100).unwrap_err();
         assert!(matches!(err, DebitError::AccountNotOpen(AccountStatus::Frozen)));
     }
@@ -162,15 +162,15 @@ mod exhaustive_account_service_tests {
     #[test]
     fn test_set_status_reopen_allows_operations() {
         let (svc, id) = setup(1000);
-        svc.set_status(id, AccountStatus::Frozen);
-        svc.set_status(id, AccountStatus::Open);
+        assert_eq!(svc.set_status(id, AccountStatus::Frozen), Ok(true));
+        assert_eq!(svc.set_status(id, AccountStatus::Open), Ok(true));
         assert_eq!(svc.perform_credit(id, 500).unwrap(), 1500);
     }
 
     #[test]
     fn test_set_status_closed_permanent() {
         let (svc, id) = setup(1000);
-        svc.set_status(id, AccountStatus::Closed);
+        assert_eq!(svc.set_status(id, AccountStatus::Closed), Ok(true));
         let err = svc.perform_credit(id, 100).unwrap_err();
         assert!(matches!(err, crate::domain::account::CreditError::AccountNotOpen(AccountStatus::Closed)));
     }

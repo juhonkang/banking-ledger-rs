@@ -46,13 +46,13 @@ mod edge_tests {
     #[test]
     fn test_freeze_unfreeze_freeze() {
         let acc = Account::new(AccountType::Asset, "USD", 5000, None);
-        acc.set_status(AccountStatus::Frozen);
+        acc.set_status_unchecked(AccountStatus::Frozen);
         assert!(acc.debit(100).is_err());
-        acc.set_status(AccountStatus::Open);
+        acc.set_status_unchecked(AccountStatus::Open);
         assert!(acc.debit(100).is_ok());
-        acc.set_status(AccountStatus::Frozen);
+        acc.set_status_unchecked(AccountStatus::Frozen);
         assert!(acc.credit(100).is_err());
-        acc.set_status(AccountStatus::Open);
+        acc.set_status_unchecked(AccountStatus::Open);
         assert!(acc.credit(100).is_ok());
     }
 

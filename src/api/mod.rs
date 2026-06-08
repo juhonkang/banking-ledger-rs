@@ -476,8 +476,12 @@ async fn set_account_status(
         "CLOSED" => AccountStatus::Closed,
         _ => return Err(AppError::BadRequest("Invalid status".into())),
     };
-    if !state.account_service.set_status(id, new_status) {
-        return Err(AppError::NotFound);
+    match state.account_service.set_status(id, new_status) {
+        Ok(true) => {}
+        Ok(false) => return Err(AppError::NotFound),
+        Err(e) => return Err(AppError::BadRequest(
+            format!("Invalid status transition: {}", e)
+        )),
     }
     let account = state.account_service.get_account(id).ok_or(AppError::NotFound)?;
     let currency = resolve_currency(&account.currency);
@@ -1404,18 +1408,21 @@ async fn coa_deactivate(
     State(state): State<Arc<AppState>>,
     Path(id): Path<uuid::Uuid>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let success = state.account_service.set_status(id, AccountStatus::Closed);
-    if success {
-        let mut chain = state.hash_chain.lock().expect("hash_chain: lock poisoned");
-        chain.append(&format!("coa_deactivate:{}", id));
-        drop(chain);
-        persist_after_mutation(&state);
-        Ok(Json(serde_json::json!({
-            "id": id,
-            "status": "Deactivated",
-        })))
-    } else {
-        Err(AppError::NotFound)
+    match state.account_service.set_status(id, AccountStatus::Closed) {
+        Ok(true) => {
+            let mut chain = state.hash_chain.lock().expect("hash_chain: lock poisoned");
+            chain.append(&format!("coa_deactivate:{}", id));
+            drop(chain);
+            persist_after_mutation(&state);
+            Ok(Json(serde_json::json!({
+                "id": id,
+                "status": "Deactivated",
+            })))
+        }
+        Ok(false) => Err(AppError::NotFound),
+        Err(e) => Err(AppError::BadRequest(
+            format!("Cannot close account: {}", e)
+        )),
     }
 }
 

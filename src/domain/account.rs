@@ -61,6 +61,18 @@ pub enum AccountStatus {
     Closed,
 }
 
+/// Error for invalid account status transitions.
+#[derive(Debug, Clone, PartialEq, thiserror::Error)]
+pub enum AccountStatusError {
+    #[error("Cannot modify closed account")]
+    ClosedAccount,
+    #[error("Invalid status transition from {from:?} to {to:?}")]
+    InvalidTransition {
+        from: AccountStatus,
+        to: AccountStatus,
+    },
+}
+
 /// A ledger account — the heartbeat of financial truth.
 ///
 /// # Thread Safety
@@ -164,8 +176,29 @@ impl Account {
 
     // ━━━ Status Management ━━━
 
-    /// Set the account status. Thread-safe via Mutex.
-    pub fn set_status(&self, new_status: AccountStatus) {
+    /// Set the account status with state machine validation.
+    /// Valid: Open→Frozen, Frozen→Open, Open→Closed, Frozen→Closed.
+    /// Closed is terminal.
+    pub fn set_status(&self, new_status: AccountStatus) -> Result<(), AccountStatusError> {
+        let mut s = self.status.lock().unwrap();
+        let current = *s;
+        match (current, new_status) {
+            (AccountStatus::Closed, _) => return Err(AccountStatusError::ClosedAccount),
+            (AccountStatus::Open, AccountStatus::Closed)
+            | (AccountStatus::Frozen, AccountStatus::Closed)
+            | (AccountStatus::Open, AccountStatus::Frozen)
+            | (AccountStatus::Frozen, AccountStatus::Open) => {} // valid
+            _ => return Err(AccountStatusError::InvalidTransition { from: current, to: new_status }),
+        }
+        *s = new_status;
+        let mut lu = self.last_updated.lock().unwrap();
+        *lu = chrono::Utc::now();
+        Ok(())
+    }
+
+    /// Legacy: set status without validation. Only for tests.
+    #[doc(hidden)]
+    pub fn set_status_unchecked(&self, new_status: AccountStatus) {
         let mut s = self.status.lock().unwrap();
         *s = new_status;
         let mut lu = self.last_updated.lock().unwrap();
