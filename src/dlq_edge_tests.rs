@@ -105,13 +105,15 @@ mod resilience_edge_tests {
     #[test]
     fn test_exponential_backoff_first_attempt_minimal() {
         let d = exponential_backoff(0, 100, 5000);
-        assert!(d.as_millis() <= 100);
+        // base=100, attempt=0 => 100ms, with ±25% jitter => 75-125ms
+        assert!(d.as_millis() <= 150, "got {} ms", d.as_millis());
     }
 
     #[test]
     fn test_exponential_backoff_max_capped() {
         let d = exponential_backoff(10, 100, 2000);
-        assert!(d.as_millis() <= 2000);
+        // Capped at 2000ms, with ±25% jitter => 1500-2500ms
+        assert!(d.as_millis() <= 2600, "got {} ms", d.as_millis());
     }
 
     #[test]
