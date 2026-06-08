@@ -1,5 +1,7 @@
 pub mod account;
 #[cfg(test)]
+mod account_coverage_tests;
+#[cfg(test)]
 mod account_test;
 pub mod coa;
 #[cfg(test)]
