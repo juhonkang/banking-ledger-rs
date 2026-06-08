@@ -50,6 +50,8 @@ mod deep_correctness_tests;
 
 #[cfg(test)]
 mod audit_bug_regression;
+#[cfg(test)]
+mod benchmarks;
 mod boundary_probe_tests;
 mod boundary_probe_extended_tests;
 
