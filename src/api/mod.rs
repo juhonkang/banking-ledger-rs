@@ -17,7 +17,7 @@ use uuid::Uuid;
 
 use crate::domain::account::{Account, AccountId, AccountStatus, AccountType};
 use crate::domain::identifier::IdentifierType;
-use crate::domain::journal::{EntryLeg, JournalEntry, Transaction};
+use crate::domain::journal::{EntryLeg, EntrySide, JournalEntry, Transaction};
 use crate::domain::money::{Currency, Money};
 use crate::domain::party::PartyType;
 use crate::extensions::{AccountExt, HashChainExt, JournalExt};
@@ -1233,9 +1233,8 @@ async fn replace_identifier(
     Path(id): Path<uuid::Uuid>,
     Json(req): Json<ReplaceIdentifierRequest>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let mut svc = state.identity_service.write().expect("identity_service: lock poisoned");
-
-    // Verify the identifier exists
+    // Verify the identifier exists (read-only scan)
+    let svc = state.identity_service.read().expect("identity_service: lock poisoned");
     let mut exists = false;
     svc.for_each_party(|party| {
         if !exists {
@@ -1247,11 +1246,14 @@ async fn replace_identifier(
             }
         }
     });
+    drop(svc);
 
     if !exists {
         return Err(AppError::NotFound);
     }
 
+    // Now acquire write lock for the actual mutation
+    let svc = state.identity_service.write().expect("identity_service: lock poisoned");
     let replacement = svc.replace_identifier(
         id,
         &req.new_value,
@@ -1292,6 +1294,27 @@ async fn reverse_journal_entry(
     let reversal = original.reverse(new_txn_id, next_seq)
         .map_err(|e| AppError::BadRequest(format!("Cannot reverse journal entry: {}", e)))?;
 
+    // ━━━ Apply reversal balance updates to accounts ━━━
+    for leg in &reversal.legs {
+        match leg.side {
+            EntrySide::Debit => {
+                if let Err(e) = state.account_service.perform_debit(leg.account_id, leg.amount_cents) {
+                    eprintln!("CRITICAL: Reversal debit failed on account {} for entry {}: {:?}",
+                        leg.account_id, reversal.id, e);
+                    return Err(AppError::BadRequest(format!("Reversal debit failed: {:?}", e)));
+                }
+            }
+            EntrySide::Credit => {
+                if let Err(e) = state.account_service.perform_credit(leg.account_id, leg.amount_cents) {
+                    eprintln!("CRITICAL: Reversal credit failed on account {} for entry {}: {:?}",
+                        leg.account_id, reversal.id, e);
+                    return Err(AppError::BadRequest(format!("Reversal credit failed: {:?}", e)));
+                }
+            }
+        }
+    }
+
+    // ━━━ Record in hash chain + journal ━━━
     let mut chain = state.hash_chain.lock().expect("hash_chain: lock poisoned");
     let block_data = serde_json::json!({
         "action": "journal_reversal",
