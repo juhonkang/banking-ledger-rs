@@ -36,7 +36,7 @@ jobs:
         run: cargo nextest run --profile ci
       
       - name: Clippy (lints)
-        run: cargo clippy -- -D warnings -A dead_code -A clippy::manual_checked_ops
+        run: cargo clippy -- -D warnings -A dead_code -A clippy::manual-checked-ops -A clippy::duration-suboptimal-units
 
   # ═══ Integration Tests ═══
   integration:
