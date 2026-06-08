@@ -87,6 +87,9 @@ mod boundary_probe_extended_tests;
 mod event_bus_edge_cases;
 
 #[cfg(test)]
+mod hash_chain_verify_edge_tests;
+
+#[cfg(test)]
 mod journal_audit_edge_tests;
 
 #[cfg(test)]
