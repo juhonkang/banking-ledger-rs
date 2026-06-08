@@ -3,6 +3,7 @@ pub mod account_service;
 mod account_service_exhaustive_test;
 #[cfg(feature = "full")]
 pub mod advanced;
+pub mod choreography;
 #[cfg(feature = "full")]
 pub mod concurrency;
 pub mod identity_service;
