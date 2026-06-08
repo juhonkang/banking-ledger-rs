@@ -1,50 +1,75 @@
 //! Idempotent event consumer — deduplicates events by transaction_id.
 //! Uses DashMap for lock-free dedup with configurable TTL-based eviction.
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use dashmap::DashMap;
-use uuid::Uuid;
+
+/// Bound on idempotency tracking to prevent unbounded memory growth.
+const DEFAULT_MAX_ENTRIES: usize = 100_000;
 
 /// Dedicated idempotency service for event consumers.
 /// Every event carries a transaction_id used as the dedup key.
+/// Auto-evicts oldest entries when capacity is exceeded.
 pub struct IdempotencyService {
     processed: DashMap<String, DateTime<Utc>>,
+    max_entries: usize,
 }
 
 impl IdempotencyService {
     pub fn new() -> Self {
         Self {
             processed: DashMap::new(),
+            max_entries: DEFAULT_MAX_ENTRIES,
         }
     }
 
+    /// Set a custom max capacity.
+    pub fn with_capacity(mut self, max: usize) -> Self {
+        self.max_entries = max;
+        self
+    }
+
     /// Check if this transaction has already been processed.
-    /// Returns true if already seen (idempotent skip).
     pub fn is_processed(&self, transaction_id: &str) -> bool {
         self.processed.contains_key(transaction_id)
     }
 
-    /// Atomically check AND mark a transaction as processed.
-    /// Returns true if it was already processed, false if newly marked.
-    /// Uses DashMap's entry API for atomicity.
+    /// Atomically check AND mark. Returns true if already processed.
     pub fn check_and_mark(&self, transaction_id: &str) -> bool {
         self.processed
             .insert(transaction_id.to_string(), Utc::now())
-            .is_some() // None = newly inserted (not duplicate), Some = already existed
+            .is_some()
     }
 
-    /// Mark a transaction as processed without checking.
+    /// Mark as processed with capacity guard.
     pub fn mark_processed(&self, transaction_id: &str) {
+        if self.processed.len() >= self.max_entries {
+            self.evict_oldest_batch();
+        }
         self.processed
             .insert(transaction_id.to_string(), Utc::now());
     }
 
-    /// Evict entries older than the given seconds.
+    /// Evict entries older than given seconds (must be >= 1).
     pub fn evict_older_than(&self, ttl_seconds: i64) -> usize {
-        let cutoff = Utc::now() - chrono::Duration::seconds(ttl_seconds);
+        let cutoff = Utc::now() - ChronoDuration::seconds(ttl_seconds.max(1));
         let before = self.processed.len();
         self.processed.retain(|_, ts| *ts > cutoff);
         before - self.processed.len()
+    }
+
+    /// Evict oldest 10% when over capacity.
+    fn evict_oldest_batch(&self) {
+        let to_remove = (self.max_entries / 10).max(1);
+        let mut entries: Vec<(String, DateTime<Utc>)> = self
+            .processed
+            .iter()
+            .map(|e| (e.key().clone(), *e.value()))
+            .collect();
+        entries.sort_by_key(|(_, ts)| *ts);
+        for (key, _) in entries.iter().take(to_remove) {
+            self.processed.remove(key);
+        }
     }
 
     /// Number of tracked transaction IDs.

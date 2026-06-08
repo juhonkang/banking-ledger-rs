@@ -185,10 +185,13 @@ impl HashChain {
 
     /// Append a new block to the chain. Returns the new block.
     pub fn append(&mut self, data: &str) -> &HashLink {
-        let previous = self.blocks.last().unwrap();
+        let previous = self
+            .blocks
+            .last()
+            .expect("HashChain: blocks must contain genesis on append — chain corrupted");
         let block = HashLink::next(previous, data);
         self.blocks.push(block);
-        self.blocks.last().unwrap()
+        self.blocks.last().expect("just pushed")
     }
 
     // ━━━ Tamper Detection ━━━

@@ -7,7 +7,7 @@ use std::fmt::Debug;
 use std::mem::MaybeUninit;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 // ━━━ Cache Line Padding ━━━
 
@@ -206,24 +206,25 @@ impl<T> RingBuffer<T> {
         let producer_seq = self.producer_sequence.load(Ordering::Acquire);
 
         if consumer_seq >= producer_seq {
-            return None; // Empty
+            return None;
         }
 
         let seq = consumer_seq;
         let slot = self.slot(seq).get();
-
-        // SAFETY: producer has published, consumer hasn't read yet
         let data = unsafe { (*slot).assume_init_read() };
         self.consumer_sequence.store(seq + 1, Ordering::Release);
-
         Some(data)
     }
 
-    /// Pop with a wait strategy for blocking consumers
-    pub fn pop_wait(&self, strategy: WaitStrategy) -> T {
+    /// Pop with wait strategy. Returns None if interrupted.
+    pub fn pop_wait(&self, strategy: WaitStrategy, timeout: Duration) -> Option<T> {
+        let deadline = Instant::now() + timeout;
         loop {
             if let Some(data) = self.try_pop() {
-                return data;
+                return Some(data);
+            }
+            if Instant::now() > deadline {
+                return None;
             }
             strategy.apply();
         }

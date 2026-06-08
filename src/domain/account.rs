@@ -124,7 +124,7 @@ impl Clone for Account {
             currency: self.currency.clone(),
             balance: AtomicI64::new(self.balance.load(Ordering::Acquire)),
             available_balance: AtomicI64::new(self.available_balance.load(Ordering::Acquire)),
-            status: std::sync::Mutex::new(*self.status.lock().unwrap()),
+            status: std::sync::Mutex::new(*self.status.lock().expect("account status mutex poisoned")),
             owner_party_id: self.owner_party_id,
             created_at: self.created_at,
             last_updated: std::sync::Mutex::new(*self.last_updated.lock().unwrap()),
@@ -171,7 +171,7 @@ impl Account {
     /// Current lifecycle status.
     #[must_use]
     pub fn status(&self) -> AccountStatus {
-        *self.status.lock().unwrap()
+        *self.status.lock().expect("account status mutex poisoned")
     }
 
     // ━━━ Status Management ━━━
@@ -180,7 +180,7 @@ impl Account {
     /// Valid: Open→Frozen, Frozen→Open, Open→Closed, Frozen→Closed.
     /// Closed is terminal.
     pub fn set_status(&self, new_status: AccountStatus) -> Result<(), AccountStatusError> {
-        let mut s = self.status.lock().unwrap();
+        let mut s = self.status.lock().expect("account status mutex poisoned");
         let current = *s;
         match (current, new_status) {
             (AccountStatus::Closed, _) => return Err(AccountStatusError::ClosedAccount),
@@ -199,7 +199,7 @@ impl Account {
     /// Legacy: set status without validation. Only for tests.
     #[doc(hidden)]
     pub fn set_status_unchecked(&self, new_status: AccountStatus) {
-        let mut s = self.status.lock().unwrap();
+        let mut s = self.status.lock().expect("account status mutex poisoned");
         *s = new_status;
         let mut lu = self.last_updated.lock().unwrap();
         *lu = chrono::Utc::now();

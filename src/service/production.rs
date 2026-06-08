@@ -255,7 +255,7 @@ impl ThunderingHerdSim {
         }
 
         let _total = start.elapsed();
-        let avg: Duration = latencies.iter().sum::<Duration>() / latencies.len() as u32;
+        let avg: Duration = if latencies.is_empty() { Duration::ZERO } else { latencies.iter().sum::<Duration>() / latencies.len() as u32 };
         let max = latencies.iter().max().copied().unwrap_or(Duration::ZERO);
 
         (avg, max, 1.0)
@@ -275,7 +275,7 @@ impl ThunderingHerdSim {
             latencies.push(req_start.elapsed());
         }
 
-        let avg: Duration = latencies.iter().sum::<Duration>() / latencies.len() as u32;
+        let avg: Duration = if latencies.is_empty() { Duration::ZERO } else { latencies.iter().sum::<Duration>() / latencies.len() as u32 };
         let max = latencies.iter().max().copied().unwrap_or(Duration::ZERO);
         (avg, max, 1.0)
     }
@@ -306,7 +306,7 @@ impl ThunderingHerdSim {
         let avg: Duration = if latencies.is_empty() {
             Duration::ZERO
         } else {
-            latencies.iter().sum::<Duration>() / latencies.len() as u32
+            if latencies.is_empty() { Duration::ZERO } else { latencies.iter().sum::<Duration>() / latencies.len() as u32 }
         };
         let max = latencies.iter().max().copied().unwrap_or(Duration::ZERO);
         (avg, max, f64::from(successes) / self.num_clients as f64)
@@ -494,7 +494,7 @@ impl StressTest {
         let elapsed = start.elapsed();
         let total_ops = counter.load(Ordering::Relaxed);
         let throughput = total_ops as f64 / elapsed.as_secs_f64();
-        let avg_latency = elapsed / total_ops as u32;
+        let avg_latency = if total_ops > 0 { elapsed / total_ops as u32 } else { Duration::ZERO };
 
         StressTestResult {
             total_ops,
