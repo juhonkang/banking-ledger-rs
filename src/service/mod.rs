@@ -7,6 +7,7 @@ pub mod advanced;
 pub mod choreography;
 #[cfg(feature = "full")]
 pub mod concurrency;
+pub mod distributed_state;
 pub mod idempotency;
 pub mod identity_service;
 #[cfg(test)]
