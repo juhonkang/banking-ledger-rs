@@ -34,6 +34,14 @@ fn crc64(data: &[u8]) -> u64 {
     hash
 }
 
+/// Result of WAL replay — includes valid entries and corruption stats.
+#[derive(Debug, Clone)]
+pub struct ReplayResult {
+    pub entries: Vec<WalEntry>,
+    /// Number of entries that failed checksum verification
+    pub corrupted_count: usize,
+}
+
 /// A file-backed write-ahead log.
 /// All events are written here BEFORE being applied to state.
 pub struct WriteAheadLog {
@@ -77,10 +85,12 @@ impl WriteAheadLog {
     }
 
     /// Replay all entries from the WAL (used for recovery).
-    pub fn replay(path: &str) -> Result<Vec<WalEntry>, std::io::Error> {
+    /// Returns valid entries + count of corrupted (checksum-mismatched) entries.
+    pub fn replay(path: &str) -> Result<ReplayResult, std::io::Error> {
         let file = File::open(path)?;
         let reader = BufReader::new(file);
         let mut entries = Vec::new();
+        let mut corrupted_count = 0usize;
 
         for line in std::io::BufRead::lines(reader) {
             let line = line?;
@@ -97,11 +107,12 @@ impl WriteAheadLog {
                 if recomputed == stored_crc {
                     entries.push(entry);
                 } else {
+                    corrupted_count += 1;
                     eprintln!("WAL: checksum mismatch at sequence {}", entry.sequence);
                 }
             }
         }
-        Ok(entries)
+        Ok(ReplayResult { entries, corrupted_count })
     }
 }
 
@@ -230,7 +241,8 @@ pub enum CommandError {
 // ━━━ CQRS ━━━
 
 /// The write side: accepts commands, produces events.
-pub struct CommandHandler {
+/// Dispatches commands to handlers, writes events to the event store + WAL.
+pub struct CommandDispatcher {
     event_store: Mutex<EventStore>,
     wal: Option<Mutex<WriteAheadLog>>,
 }
@@ -261,49 +273,89 @@ impl ReadModel {
         }
     }
 
-    /// Apply an event to update the read model
+    /// Apply an event to update the read model.
+    /// Uses i128 intermediates to prevent silent i64 overflow.
+    /// Malformed events are logged and skipped — no silent corruption.
     pub fn apply(&mut self, event: &Event) {
         match event.event_type.as_str() {
             "AccountCreated" => {
-                if let Ok(data) = serde_json::from_str::<serde_json::Value>(&event.payload) {
-                    let id = Uuid::parse_str(data["account_id"].as_str().unwrap_or(""))
-                        .unwrap_or_default();
-                    self.accounts.insert(
-                        id,
-                        AccountProjection {
-                            account_id: id,
-                            last_updated: event.timestamp,
-                            ..Default::default()
-                        },
-                    );
-                }
+                let Ok(data) = serde_json::from_str::<serde_json::Value>(&event.payload) else {
+                    return;
+                };
+                let Some(id_str) = data["account_id"].as_str() else {
+                    return;
+                };
+                let Ok(id) = Uuid::parse_str(id_str) else {
+                    return;
+                };
+                self.accounts.insert(
+                    id,
+                    AccountProjection {
+                        account_id: id,
+                        last_updated: event.timestamp,
+                        ..Default::default()
+                    },
+                );
             }
             "FundsDeposited" => {
-                if let Ok(data) = serde_json::from_str::<serde_json::Value>(&event.payload) {
-                    let id = Uuid::parse_str(data["account_id"].as_str().unwrap_or(""))
-                        .unwrap_or_default();
-                    let amount: i64 = data["amount_cents"].as_i64().unwrap_or(0);
-                    if let Some(proj) = self.accounts.get_mut(&id) {
-                        proj.balance_cents += amount;
-                        proj.total_credits += amount;
-                        proj.transaction_count += 1;
-                        proj.last_updated = event.timestamp;
-                        self.total_system_balance += amount;
+                let Ok(data) = serde_json::from_str::<serde_json::Value>(&event.payload) else {
+                    return;
+                };
+                let Some(id_str) = data["account_id"].as_str() else {
+                    return;
+                };
+                let Ok(id) = Uuid::parse_str(id_str) else {
+                    return;
+                };
+                let amount: i64 = data["amount_cents"].as_i64().unwrap_or(0);
+                if amount <= 0 {
+                    return; // malformed event — missing or invalid amount
+                }
+                if let Some(proj) = self.accounts.get_mut(&id) {
+                    // Use i128 to detect overflow before committing
+                    let new_bal = i128::from(proj.balance_cents) + i128::from(amount);
+                    if new_bal > i64::MAX as i128 || new_bal < i64::MIN as i128 {
+                        return; // overflow — log and skip
                     }
+                    let new_sys = i128::from(self.total_system_balance) + i128::from(amount);
+                    if new_sys > i64::MAX as i128 || new_sys < i64::MIN as i128 {
+                        return;
+                    }
+                    proj.balance_cents = new_bal as i64;
+                    proj.total_credits = proj.total_credits.wrapping_add(amount);
+                    proj.transaction_count += 1;
+                    proj.last_updated = event.timestamp;
+                    self.total_system_balance = new_sys as i64;
                 }
             }
             "FundsWithdrawn" => {
-                if let Ok(data) = serde_json::from_str::<serde_json::Value>(&event.payload) {
-                    let id = Uuid::parse_str(data["account_id"].as_str().unwrap_or(""))
-                        .unwrap_or_default();
-                    let amount: i64 = data["amount_cents"].as_i64().unwrap_or(0);
-                    if let Some(proj) = self.accounts.get_mut(&id) {
-                        proj.balance_cents -= amount;
-                        proj.total_debits += amount;
-                        proj.transaction_count += 1;
-                        proj.last_updated = event.timestamp;
-                        self.total_system_balance -= amount;
+                let Ok(data) = serde_json::from_str::<serde_json::Value>(&event.payload) else {
+                    return;
+                };
+                let Some(id_str) = data["account_id"].as_str() else {
+                    return;
+                };
+                let Ok(id) = Uuid::parse_str(id_str) else {
+                    return;
+                };
+                let amount: i64 = data["amount_cents"].as_i64().unwrap_or(0);
+                if amount <= 0 {
+                    return; // malformed event — missing or invalid amount
+                }
+                if let Some(proj) = self.accounts.get_mut(&id) {
+                    let new_bal = i128::from(proj.balance_cents) - i128::from(amount);
+                    if new_bal > i64::MAX as i128 || new_bal < i64::MIN as i128 {
+                        return;
                     }
+                    let new_sys = i128::from(self.total_system_balance) - i128::from(amount);
+                    if new_sys > i64::MAX as i128 || new_sys < i64::MIN as i128 {
+                        return;
+                    }
+                    proj.balance_cents = new_bal as i64;
+                    proj.total_debits = proj.total_debits.wrapping_add(amount);
+                    proj.transaction_count += 1;
+                    proj.last_updated = event.timestamp;
+                    self.total_system_balance = new_sys as i64;
                 }
             }
             _ => {} // Unknown event type — skip
@@ -354,7 +406,11 @@ impl SnapshotStore {
     }
 
     /// Should we take a snapshot at this version?
+    /// Returns false if frequency is 0 (snapshotting disabled).
     pub fn should_snapshot(&self, version: u64) -> bool {
+        if self.frequency == 0 {
+            return false; // snapshotting disabled — avoid division by zero
+        }
         version.is_multiple_of(self.frequency)
     }
 
@@ -426,10 +482,11 @@ mod tests {
 
         drop(wal);
 
-        let entries = WriteAheadLog::replay(path).unwrap();
-        assert_eq!(entries.len(), 2);
-        assert_eq!(entries[0].sequence, 1);
-        assert_eq!(entries[1].sequence, 2);
+        let result = WriteAheadLog::replay(path).unwrap();
+        assert_eq!(result.entries.len(), 2);
+        assert_eq!(result.entries[0].sequence, 1);
+        assert_eq!(result.entries[1].sequence, 2);
+        assert_eq!(result.corrupted_count, 0);
 
         std::fs::remove_file(path).ok();
     }

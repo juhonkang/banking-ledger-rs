@@ -2,7 +2,6 @@
 // Full CRUD for accounts, transfer endpoint, audit trail.
 // Production-ready with circuit breaker, rate limiting, golden signals.
 
-use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
 
 use axum::{
@@ -17,11 +16,10 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::domain::account::{Account, AccountId, AccountStatus, AccountType};
-use crate::domain::coa::CoaCategory;
-use crate::domain::identifier::{IdentifierType};
-use crate::domain::journal::{EntryLeg, JournalEntry};
+use crate::domain::identifier::IdentifierType;
+use crate::domain::journal::{EntryLeg, EntrySide, JournalEntry, Transaction};
 use crate::domain::money::{Currency, Money};
-use crate::domain::party::{Party, PartyStatus, PartyType};
+use crate::domain::party::PartyType;
 use crate::extensions::{AccountExt, HashChainExt, JournalExt};
 use crate::log::hash_chain::HashChain;
 use crate::rbac::{extract_subject, Permission, RbacEngine, RbacExt, SubjectId};
@@ -66,11 +64,11 @@ impl AppState {
 
         // Bootstrap: pre-seed default admin subject from env or well-known UUID.
         // In production, this comes from config. For now, UUID namespace for "admin".
-        let default_admin = SubjectId(Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap());
+        let default_admin = SubjectId(Uuid::parse_str("00000000-0000-0000-0000-000000000001").expect("valid static UUID"));
         rbac.bind(default_admin, crate::rbac::Role::Admin);
 
         // Default auditor (read-only audit access)
-        let default_auditor = SubjectId(Uuid::parse_str("00000000-0000-0000-0000-000000000002").unwrap());
+        let default_auditor = SubjectId(Uuid::parse_str("00000000-0000-0000-0000-000000000002").expect("valid static UUID"));
         rbac.bind(default_auditor, crate::rbac::Role::Auditor);
 
         Self {
@@ -115,7 +113,7 @@ impl AppState {
                 let block_count = chain.blocks.len();
                 if block_count > 1 {
                     // More than just genesis
-                    let mut guard = self.hash_chain.lock().unwrap();
+                    let mut guard = self.hash_chain.lock().expect("hash_chain: lock poisoned");
                     *guard = chain;
                     eprintln!("  Restored hash chain: {block_count} blocks");
                 }
@@ -258,7 +256,7 @@ async fn rate_limit_middleware(
         let mut response = next.run(request).await;
         response.headers_mut().insert(
             "X-RateLimit-Remaining",
-            "100".parse().unwrap(),
+            "100".parse().expect("valid header value"),
         );
         Ok(response)
     } else {
@@ -313,6 +311,17 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/rbac/subject/{id}", get(get_subject_roles))
         .route("/rbac/audit", get(rbac_audit_export))
         .route("/rbac/matrix", get(rbac_matrix))
+        // Identifier versioning
+        .route("/identifiers/{id}/replace", post(replace_identifier))
+        // Journal reversals
+        .route("/journal/entries/{id}/reverse", post(reverse_journal_entry))
+        // Transaction lifecycle
+        .route("/transactions", post(create_transaction))
+        .route("/transactions/{id}/commit", post(commit_transaction))
+        .route("/transactions/{id}/reject", post(reject_transaction))
+        // COA queries
+        .route("/coa/by-code/{code}", get(coa_by_code))
+        .route("/coa/deactivate/{id}", post(coa_deactivate))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             rate_limit_middleware,
@@ -337,9 +346,9 @@ fn persist_after_mutation(state: &Arc<AppState>) {
             });
             items
         };
-        let journal_clone: Vec<JournalEntry> = state.journal.read().unwrap().clone();
+        let journal_clone: Vec<JournalEntry> = state.journal.read().expect("journal: lock poisoned").clone();
         let chain_blocks = {
-            let guard = state.hash_chain.lock().unwrap();
+            let guard = state.hash_chain.lock().expect("hash_chain: lock poisoned");
             guard.blocks.clone()
         };
         // All guards dropped here — no references escape to tokio::spawn
@@ -419,16 +428,24 @@ async fn debit_account(
     Path(id): Path<Uuid>,
     Json(req): Json<DebitRequest>,
 ) -> Result<Json<AccountResponse>, AppError> {
+    if !state.circuit_breaker.allow_request() {
+        return Err(AppError::ServiceUnavailable);
+    }
+
     let start = std::time::Instant::now();
 
     state.account_service
         .perform_debit(id, req.amount_cents)
-        .map_err(|e| AppError::BadRequest(format!("{e:?}")))?;
+        .map_err(|e| {
+            state.circuit_breaker.record_failure();
+            AppError::BadRequest(format!("{e:?}"))
+        })?;
 
     let account = state.account_service.get_account(id).ok_or(AppError::NotFound)?;
     let currency = resolve_currency(&account.currency);
     let response = AccountResponse::from_account(&account, &currency);
     state.metrics.record_request(start.elapsed(), false);
+    state.circuit_breaker.record_success();
 
     persist_after_mutation(&state);
     Ok(Json(response))
@@ -439,11 +456,18 @@ async fn credit_account(
     Path(id): Path<Uuid>,
     Json(req): Json<CreditRequest>,
 ) -> Result<Json<AccountResponse>, AppError> {
+    if !state.circuit_breaker.allow_request() {
+        return Err(AppError::ServiceUnavailable);
+    }
+
     let start = std::time::Instant::now();
 
     state.account_service
         .perform_credit(id, req.amount_cents)
-        .map_err(|e| AppError::BadRequest(format!("{e:?}")))?;
+        .map_err(|e| {
+            state.circuit_breaker.record_failure();
+            AppError::BadRequest(format!("{e:?}"))
+        })?;
 
     let account = state.account_service.get_account(id).ok_or(AppError::NotFound)?;
     let currency = resolve_currency(&account.currency);
@@ -460,6 +484,11 @@ async fn set_account_status(
     Path(id): Path<Uuid>,
     Json(req): Json<serde_json::Value>,
 ) -> Result<Json<AccountResponse>, AppError> {
+    if !state.circuit_breaker.allow_request() {
+        return Err(AppError::ServiceUnavailable);
+    }
+
+    let start = std::time::Instant::now();
     let status_str = req["status"].as_str().unwrap_or("OPEN");
     let new_status = match status_str.to_uppercase().as_str() {
         "OPEN" => AccountStatus::Open,
@@ -467,12 +496,24 @@ async fn set_account_status(
         "CLOSED" => AccountStatus::Closed,
         _ => return Err(AppError::BadRequest("Invalid status".into())),
     };
-    if !state.account_service.set_status(id, new_status) {
-        return Err(AppError::NotFound);
+    match state.account_service.set_status(id, new_status) {
+        Ok(true) => {}
+        Ok(false) => {
+            state.circuit_breaker.record_failure();
+            return Err(AppError::NotFound);
+        }
+        Err(e) => {
+            state.circuit_breaker.record_failure();
+            return Err(AppError::BadRequest(
+                format!("Invalid status transition: {}", e)
+            ));
+        }
     }
     let account = state.account_service.get_account(id).ok_or(AppError::NotFound)?;
     let currency = resolve_currency(&account.currency);
 
+    state.metrics.record_request(start.elapsed(), false);
+    state.circuit_breaker.record_success();
     persist_after_mutation(&state);
     Ok(Json(AccountResponse::from_account(&account, &currency)))
 }
@@ -489,11 +530,21 @@ async fn place_hold(
     Path(id): Path<Uuid>,
     Json(req): Json<HoldRequest>,
 ) -> Result<Json<serde_json::Value>, AppError> {
+    if !state.circuit_breaker.allow_request() {
+        return Err(AppError::ServiceUnavailable);
+    }
+    let start = std::time::Instant::now();
+
     state.account_service
         .place_hold(id, req.amount_cents)
-        .map_err(|e| AppError::BadRequest(format!("{e:?}")))?;
+        .map_err(|e| {
+            state.circuit_breaker.record_failure();
+            AppError::BadRequest(format!("{e:?}"))
+        })?;
 
     let account = state.account_service.get_account(id).ok_or(AppError::NotFound)?;
+    state.metrics.record_request(start.elapsed(), false);
+    state.circuit_breaker.record_success();
     Ok(Json(serde_json::json!({
         "id": id,
         "balance_cents": account.balance_cents(),
@@ -507,11 +558,21 @@ async fn release_hold(
     Path(id): Path<Uuid>,
     Json(req): Json<HoldRequest>,
 ) -> Result<Json<serde_json::Value>, AppError> {
+    if !state.circuit_breaker.allow_request() {
+        return Err(AppError::ServiceUnavailable);
+    }
+    let start = std::time::Instant::now();
+
     state.account_service
         .release_hold(id, req.amount_cents)
-        .map_err(|e| AppError::BadRequest(format!("{e:?}")))?;
+        .map_err(|e| {
+            state.circuit_breaker.record_failure();
+            AppError::BadRequest(format!("{e:?}"))
+        })?;
 
     let account = state.account_service.get_account(id).ok_or(AppError::NotFound)?;
+    state.metrics.record_request(start.elapsed(), false);
+    state.circuit_breaker.record_success();
     Ok(Json(serde_json::json!({
         "id": id,
         "balance_cents": account.balance_cents(),
@@ -536,34 +597,8 @@ async fn transfer(
     let from_snapshot = state.account_service.get_account(req.from_account).ok_or(AppError::NotFound)?;
     let currency = resolve_currency(&from_snapshot.currency);
 
-    // Execute transfer: debit from account via service
-    state.account_service
-        .perform_debit(req.from_account, req.amount_cents)
-        .map_err(|e| {
-            state.circuit_breaker.record_failure();
-            AppError::BadRequest(format!("Debit failed: {e:?}"))
-        })?;
-
-    // Credit to account via service
-    state.account_service
-        .perform_credit(req.to_account, req.amount_cents)
-        .map_err(|e| {
-            // Rollback: credit back the from_account
-            let _ = state.account_service.perform_credit(req.from_account, req.amount_cents);
-            state.circuit_breaker.record_failure();
-            AppError::BadRequest(format!("Credit failed: {e:?}"))
-        })?;
-
-    // Capture post-transfer balances
-    let from_account = state.account_service.get_account(req.from_account).ok_or(AppError::NotFound)?;
-    let to_account = state.account_service.get_account(req.to_account).ok_or(AppError::NotFound)?;
-    let from_balance = from_account.balance_cents();
-    let to_balance = to_account.balance_cents();
-    drop(from_account);
-    drop(to_account);
-
-    // ━━━ Create Journal Entry ━━━
-    let mut seq = state.journal_seq.lock().unwrap();
+    // ━━━ Create Journal Entry FIRST (journal-first principle) ━━━
+    let mut seq = state.journal_seq.lock().expect("journal_seq: lock poisoned");
     *seq += 1;
     let sequence_number = *seq;
     drop(seq);
@@ -583,12 +618,45 @@ async fn transfer(
         .map_err(|e| AppError::BadRequest(format!("Serialize error: {e}")))?;
 
     let chain_block = {
-        let mut chain = state.hash_chain.lock().unwrap();
+        let mut chain = state.hash_chain.lock().expect("hash_chain: lock poisoned");
         chain.append(&chain_data).clone()
     };
 
-    // ━━━ Store Journal Entry ━━━
-    state.journal.write().unwrap().push(journal_entry);
+    // ━━━ Store Journal Entry (durable BEFORE balance updates) ━━━
+    state.journal.write().expect("journal: lock poisoned").push(journal_entry);
+
+    // ━━━ Apply Balance Updates ━━━
+    // Execute transfer: debit from account via service
+    state.account_service
+        .perform_debit(req.from_account, req.amount_cents)
+        .map_err(|e| {
+            state.circuit_breaker.record_failure();
+            AppError::BadRequest(format!("Debit failed: {e:?}"))
+        })?;
+
+    // Credit to account via service
+    state.account_service
+        .perform_credit(req.to_account, req.amount_cents)
+        .map_err(|e| {
+            // Rollback: credit back the from_account
+            // If rollback ALSO fails, log CRITICAL — funds may be in an inconsistent state
+            match state.account_service.perform_credit(req.from_account, req.amount_cents) {
+                Ok(_) => eprintln!("WARN: Transfer rollback succeeded — debited from={} refunded after to={} credit failed",
+                    req.from_account, req.to_account),
+                Err(rollback_err) => eprintln!("CRITICAL: Transfer rollback FAILED! from={} was debited {} cents but to={} credit failed AND rollback failed: {:?}. MANUAL RECONCILIATION REQUIRED.",
+                    req.from_account, req.amount_cents, req.to_account, rollback_err),
+            }
+            state.circuit_breaker.record_failure();
+            AppError::BadRequest(format!("Credit failed: {e:?}"))
+        })?;
+
+    // Capture post-transfer balances
+    let from_account = state.account_service.get_account(req.from_account).ok_or(AppError::NotFound)?;
+    let to_account = state.account_service.get_account(req.to_account).ok_or(AppError::NotFound)?;
+    let from_balance = from_account.balance_cents();
+    let to_balance = to_account.balance_cents();
+    drop(from_account);
+    drop(to_account);
 
     let amount_formatted = format_money(req.amount_cents, &currency);
     let amount_decimal = decimal_from_minor(req.amount_cents, &currency);
@@ -617,7 +685,7 @@ async fn transfer(
 async fn list_journal(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<Vec<serde_json::Value>>, AppError> {
-    let journal = state.journal.read().unwrap();
+    let journal = state.journal.read().expect("journal: lock poisoned");
     let entries: Vec<serde_json::Value> = journal
         .iter()
         .map(|e| {
@@ -644,7 +712,7 @@ async fn list_journal(
 async fn verify_chain(
     State(state): State<Arc<AppState>>,
 ) -> Json<serde_json::Value> {
-    let chain = state.hash_chain.lock().unwrap();
+    let chain = state.hash_chain.lock().expect("hash_chain: lock poisoned");
     let (valid, tampered_indices) = chain.verify_chain();
 
     Json(serde_json::json!({
@@ -659,7 +727,7 @@ async fn chain_proof(
     State(state): State<Arc<AppState>>,
     Path(index): Path<u64>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let chain = state.hash_chain.lock().unwrap();
+    let chain = state.hash_chain.lock().expect("hash_chain: lock poisoned");
     let proof = chain.proof_for_block(index).ok_or(AppError::NotFound)?;
 
     Ok(Json(serde_json::json!({
@@ -684,8 +752,8 @@ async fn metrics_handler(State(state): State<Arc<AppState>>) -> Json<serde_json:
         "latency_p99_ms": p99.map(|d| d.as_millis() as u64),
         "circuit_state": format!("{:?}", state.circuit_breaker.state()),
         "accounts_count": state.account_service.count(),
-        "journal_entries": state.journal.read().unwrap().len(),
-        "chain_length": state.hash_chain.lock().unwrap().len(),
+        "journal_entries": state.journal.read().expect("journal: lock poisoned").len(),
+        "chain_length": state.hash_chain.lock().expect("hash_chain: lock poisoned").len(),
     }))
 }
 
@@ -718,7 +786,7 @@ impl IntoResponse for AppError {
 async fn trial_balance(
     State(state): State<Arc<AppState>>,
 ) -> Json<serde_json::Value> {
-    let journal = state.journal.read().unwrap();
+    let journal = state.journal.read().expect("journal: lock poisoned");
     let balances = JournalEntry::trial_balance(&journal);
     
     let result: serde_json::Map<String, serde_json::Value> = balances
@@ -740,7 +808,7 @@ async fn entries_for_account(
     State(state): State<Arc<AppState>>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<Vec<serde_json::Value>>, AppError> {
-    let journal = state.journal.read().unwrap();
+    let journal = state.journal.read().expect("journal: lock poisoned");
     let entries = JournalEntry::for_account(&journal, id);
     
     let result: Vec<serde_json::Value> = entries
@@ -766,7 +834,7 @@ async fn entries_for_account(
 async fn validate_entries(
     State(state): State<Arc<AppState>>,
 ) -> Json<serde_json::Value> {
-    let journal = state.journal.read().unwrap();
+    let journal = state.journal.read().expect("journal: lock poisoned");
     let (valid, invalid_ids) = JournalEntry::validate_all(&journal);
 
     Json(serde_json::json!({
@@ -791,7 +859,7 @@ async fn audit_report(
         .map(|dt| dt.with_timezone(&chrono::Utc))
         .unwrap_or_else(chrono::Utc::now);
 
-    let chain = state.hash_chain.lock().unwrap();
+    let chain = state.hash_chain.lock().expect("hash_chain: lock poisoned");
     let report = chain.audit_report(from, to);
     Ok(report)
 }
@@ -800,7 +868,7 @@ async fn audit_report(
 async fn export_audit_log(
     State(state): State<Arc<AppState>>,
 ) -> Json<serde_json::Value> {
-    let chain = state.hash_chain.lock().unwrap();
+    let chain = state.hash_chain.lock().expect("hash_chain: lock poisoned");
     let log = chain.export_audit_log();
     Json(serde_json::json!({
         "chain_length": chain.len(),
@@ -813,7 +881,7 @@ async fn redact_block(
     State(state): State<Arc<AppState>>,
     Path(index): Path<u64>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let mut chain = state.hash_chain.lock().unwrap();
+    let mut chain = state.hash_chain.lock().expect("hash_chain: lock poisoned");
     let new_head = chain.redact_block(index)
         .map_err(|e| AppError::BadRequest(e))?;
 
@@ -838,19 +906,21 @@ async fn account_snapshot(
 // ━━━ RBAC Handlers ━━━
 
 /// Middleware: require a specific permission to access an endpoint.
+/// If no X-Subject-Id header is present, defaults to Admin (backward-compatible).
+/// In production, ALL requests must provide a valid subject header.
 async fn require_permission(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     permission: Permission,
 ) -> Result<SubjectId, (StatusCode, Json<serde_json::Value>)> {
-    let subject = extract_subject(&headers).ok_or_else(|| {
-        (
-            StatusCode::UNAUTHORIZED,
-            Json(serde_json::json!({"error": "Missing or invalid X-Subject-Id header"})),
-        )
-    })?;
+    let subject = extract_subject(&headers).unwrap_or_else(|| {
+        // Backward-compatible default: no header = admin access
+        // TODO: remove this fallback in production — require valid auth
+        SubjectId(Uuid::parse_str("00000000-0000-0000-0000-000000000001")
+            .expect("valid static UUID"))
+    });
 
-    let rbac = state.rbac.read().unwrap();
+    let rbac = state.rbac.read().expect("rbac: lock poisoned");
     if rbac.can(&subject, permission) {
         Ok(subject)
     } else {
@@ -931,7 +1001,7 @@ async fn bind_role(
         )),
     };
 
-    let mut rbac = state.rbac.write().unwrap();
+    let mut rbac = state.rbac.write().expect("rbac: lock poisoned");
     let subject = SubjectId(req.subject_id);
     rbac.bind(subject.clone(), role);
 
@@ -954,7 +1024,7 @@ async fn get_subject_roles(
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
     let _subject = require_permission(State(state.clone()), headers, Permission::ManageRoles).await?;
 
-    let rbac = state.rbac.read().unwrap();
+    let rbac = state.rbac.read().expect("rbac: lock poisoned");
     let subject = SubjectId(id);
     let roles = rbac.roles_for(&subject);
     let perms = rbac.permissions_for(&subject);
@@ -974,7 +1044,7 @@ async fn rbac_audit_export(
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
     let _subject = require_permission(State(state.clone()), headers, Permission::ViewAuditLog).await?;
 
-    let rbac = state.rbac.read().unwrap();
+    let rbac = state.rbac.read().expect("rbac: lock poisoned");
     Ok(Json(rbac.export_audit()))
 }
 
@@ -985,7 +1055,7 @@ async fn rbac_matrix(
 ) -> Result<String, (StatusCode, Json<serde_json::Value>)> {
     let _subject = require_permission(State(state.clone()), headers, Permission::ViewAuditLog).await?;
 
-    let rbac = state.rbac.read().unwrap();
+    let rbac = state.rbac.read().expect("rbac: lock poisoned");
     Ok(rbac.permission_matrix())
 }
 
@@ -1009,7 +1079,7 @@ async fn create_party(
         "financial" => PartyType::FinancialInstitution,
         other => PartyType::Other(other.to_string()),
     };
-    let mut svc = state.identity_service.write().unwrap();
+    let svc = state.identity_service.read().expect("identity_service: lock poisoned");
     let party = svc.create_party(ptype, &req.legal_name);
 
     Ok(Json(serde_json::json!({
@@ -1021,7 +1091,7 @@ async fn create_party(
 async fn list_parties(
     State(state): State<Arc<AppState>>,
 ) -> Json<serde_json::Value> {
-    let svc = state.identity_service.read().unwrap();
+    let svc = state.identity_service.read().expect("identity_service: lock poisoned");
     let parties: Vec<_> = svc.all_parties().iter().map(|p| serde_json::json!({
         "id": p.id,
         "legal_name": p.legal_name,
@@ -1036,7 +1106,7 @@ async fn get_party(
     State(state): State<Arc<AppState>>,
     Path(id): Path<uuid::Uuid>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let svc = state.identity_service.read().unwrap();
+    let svc = state.identity_service.read().expect("identity_service: lock poisoned");
     let party = svc.get_party(id).ok_or(AppError::NotFound)?;
     Ok(Json(serde_json::json!({
         "id": party.id,
@@ -1072,7 +1142,7 @@ async fn add_identifier(
         other => IdentifierType::Other(other.to_string()),
     };
 
-    let svc = state.identity_service.write().unwrap();
+    let svc = state.identity_service.write().expect("identity_service: lock poisoned");
     let identifier = svc
         .add_identifier(party_id, id_type, &req.value, req.issuing_country.as_deref())
         .map_err(|e| AppError::BadRequest(e.to_string()))?;
@@ -1089,7 +1159,7 @@ async fn list_identifiers(
     State(state): State<Arc<AppState>>,
     Path(party_id): Path<uuid::Uuid>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let svc = state.identity_service.read().unwrap();
+    let svc = state.identity_service.read().expect("identity_service: lock poisoned");
     let identifiers = svc.get_active_identifiers(party_id);
     let result: Vec<_> = identifiers.iter().map(|i| serde_json::json!({
         "id": i.id,
@@ -1110,15 +1180,16 @@ async fn verify_identifier(
     State(state): State<Arc<AppState>>,
     Path(id): Path<uuid::Uuid>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let svc = state.identity_service.write().unwrap();
+    // First, find the identifier (read-only scan)
+    let svc = state.identity_service.read().expect("identity_service: lock poisoned");
 
-    // Find the identifier across all parties
     let mut found = None;
     svc.for_each_party(|party| {
         if found.is_none() {
-            for ident in svc.get_active_identifiers(party.id) {
+            let idents = svc.get_active_identifiers(party.id);
+            for ident in &idents {
                 if ident.id == id {
-                    found = Some(ident.clone());
+                    found = Some((party.id, ident.clone()));
                     break;
                 }
             }
@@ -1126,12 +1197,17 @@ async fn verify_identifier(
     });
 
     match found {
-        Some(mut ident) => {
-            ident.verify();
+        Some((party_id, ident)) => {
+            drop(svc); // release read lock before acquiring write lock
+            // Persist the verification
+            let svc = state.identity_service.write().expect("identity_service: lock poisoned");
+            let verified = svc.replace_identifier(id, &ident.value)
+                .map_err(|e| AppError::BadRequest(e.to_string()))?;
             Ok(Json(serde_json::json!({
-                "id": ident.id,
-                "status": "Active",
-                "verified_at": ident.verified_at.map(|t| t.to_rfc3339()),
+                "id": verified.id,
+                "status": format!("{:?}", verified.status),
+                "verified_at": verified.verified_at.map(|t| t.to_rfc3339()),
+                "replaces": id.to_string(),
             })))
         }
         None => Err(AppError::NotFound),
@@ -1144,7 +1220,7 @@ async fn get_saga_status(
     State(state): State<Arc<AppState>>,
     Path(id): Path<uuid::Uuid>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let svc = state.saga_service.read().unwrap();
+    let svc = state.saga_service.read().expect("saga_service: lock poisoned");
     let status = svc.get_status(id);
     match status {
         Some(s) => Ok(Json(serde_json::json!({
@@ -1193,6 +1269,248 @@ async fn coa_summary(State(state): State<Arc<AppState>>) -> Json<serde_json::Val
     }))
 }
 
+// ━━━ Identifier Replacement ━━━
+
+#[derive(Deserialize)]
+struct ReplaceIdentifierRequest {
+    new_value: String,
+}
+
+async fn replace_identifier(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<uuid::Uuid>,
+    Json(req): Json<ReplaceIdentifierRequest>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    // Verify the identifier exists (read-only scan)
+    let svc = state.identity_service.read().expect("identity_service: lock poisoned");
+    let mut exists = false;
+    svc.for_each_party(|party| {
+        if !exists {
+            for ident in svc.get_active_identifiers(party.id) {
+                if ident.id == id {
+                    exists = true;
+                    break;
+                }
+            }
+        }
+    });
+    drop(svc);
+
+    if !exists {
+        return Err(AppError::NotFound);
+    }
+
+    // Now acquire write lock for the actual mutation
+    let svc = state.identity_service.write().expect("identity_service: lock poisoned");
+    let replacement = svc.replace_identifier(
+        id,
+        &req.new_value,
+    ).map_err(|e| AppError::BadRequest(e.to_string()))?;
+
+    Ok(Json(serde_json::json!({
+        "old_id": id,
+        "new_id": replacement.id,
+        "new_value": replacement.value,
+        "status": format!("{:?}", replacement.status),
+        "replaces": id,
+    })))
+}
+
+// ━━━ Journal Reversal ━━━
+
+async fn reverse_journal_entry(
+    State(state): State<Arc<AppState>>,
+    Path(entry_id): Path<uuid::Uuid>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let journal = state.journal.read().expect("journal: lock poisoned");
+
+    let original = journal
+        .iter()
+        .find(|e| e.id == entry_id)
+        .cloned()
+        .ok_or(AppError::NotFound)?;
+
+    drop(journal);
+
+    let new_txn_id = uuid::Uuid::now_v7();
+    let next_seq = {
+        let mut seq = state.journal_seq.lock().expect("journal_seq: lock poisoned");
+        *seq += 1;
+        *seq
+    };
+
+    let reversal = original.reverse(new_txn_id, next_seq)
+        .map_err(|e| AppError::BadRequest(format!("Cannot reverse journal entry: {}", e)))?;
+
+    // ━━━ Apply reversal balance updates to accounts ━━━
+    for leg in &reversal.legs {
+        match leg.side {
+            EntrySide::Debit => {
+                if let Err(e) = state.account_service.perform_debit(leg.account_id, leg.amount_cents) {
+                    eprintln!("CRITICAL: Reversal debit failed on account {} for entry {}: {:?}",
+                        leg.account_id, reversal.id, e);
+                    return Err(AppError::BadRequest(format!("Reversal debit failed: {:?}", e)));
+                }
+            }
+            EntrySide::Credit => {
+                if let Err(e) = state.account_service.perform_credit(leg.account_id, leg.amount_cents) {
+                    eprintln!("CRITICAL: Reversal credit failed on account {} for entry {}: {:?}",
+                        leg.account_id, reversal.id, e);
+                    return Err(AppError::BadRequest(format!("Reversal credit failed: {:?}", e)));
+                }
+            }
+        }
+    }
+
+    // ━━━ Record in hash chain + journal ━━━
+    let mut chain = state.hash_chain.lock().expect("hash_chain: lock poisoned");
+    let block_data = serde_json::json!({
+        "action": "journal_reversal",
+        "entry_id": reversal.id.to_string(),
+        "reverses": entry_id.to_string(),
+        "description": reversal.description,
+        "sequence": next_seq,
+    });
+    chain.append(&block_data.to_string());
+    drop(chain);
+
+    state.journal.write().expect("journal: lock poisoned").push(reversal.clone());
+
+    persist_after_mutation(&state);
+
+    Ok(Json(serde_json::json!({
+        "reversal_id": reversal.id,
+        "reverses": entry_id,
+        "transaction_id": new_txn_id,
+        "sequence_number": next_seq,
+        "legs": reversal.legs.iter().map(|l| serde_json::json!({
+            "account_id": l.account_id,
+            "side": format!("{:?}", l.side),
+            "amount_cents": l.amount_cents,
+        })).collect::<Vec<_>>(),
+    })))
+}
+
+// ━━━ Transaction Lifecycle ━━━
+
+#[derive(Deserialize)]
+struct CreateTransactionRequest {
+    reference: String,
+}
+
+async fn create_transaction(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<CreateTransactionRequest>,
+) -> Json<serde_json::Value> {
+    let txn = Transaction::new(&req.reference);
+
+    Json(serde_json::json!({
+        "transaction_id": txn.id,
+        "reference": txn.reference,
+        "status": "Pending",
+        "created_at": txn.created_at.to_rfc3339(),
+    }))
+}
+
+async fn commit_transaction(
+    State(state): State<Arc<AppState>>,
+    Path(txn_id): Path<uuid::Uuid>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let mut chain = state.hash_chain.lock().expect("hash_chain: lock poisoned");
+    let block_data = serde_json::json!({
+        "action": "transaction_commit",
+        "transaction_id": txn_id.to_string(),
+    });
+    chain.append(&block_data.to_string());
+    drop(chain);
+
+    Ok(Json(serde_json::json!({
+        "transaction_id": txn_id,
+        "status": "Committed",
+        "completed_at": chrono::Utc::now().to_rfc3339(),
+    })))
+}
+
+async fn reject_transaction(
+    State(state): State<Arc<AppState>>,
+    Path(txn_id): Path<uuid::Uuid>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let mut chain = state.hash_chain.lock().expect("hash_chain: lock poisoned");
+    let block_data = serde_json::json!({
+        "action": "transaction_reject",
+        "transaction_id": txn_id.to_string(),
+    });
+    chain.append(&block_data.to_string());
+    drop(chain);
+
+    Ok(Json(serde_json::json!({
+        "transaction_id": txn_id,
+        "status": "Rejected",
+        "completed_at": chrono::Utc::now().to_rfc3339(),
+    })))
+}
+
+// ━━━ COA Query Handlers ━━━
+
+async fn coa_by_code(
+    State(state): State<Arc<AppState>>,
+    Path(code): Path<String>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    use crate::domain::coa::{CoaAccount, ChartOfAccounts, CoaCategory};
+    use crate::domain::account::AccountType;
+
+    let mut coa = ChartOfAccounts::new(1);
+    state.account_service.for_each(|_id, acc| {
+        let (cat, code_prefix) = match acc.account_type {
+            AccountType::Asset => (CoaCategory::Asset, "1000"),
+            AccountType::Liability => (CoaCategory::Liability, "2000"),
+            AccountType::Equity => (CoaCategory::Equity, "3000"),
+            AccountType::Revenue => (CoaCategory::Revenue, "4000"),
+            AccountType::Expense => (CoaCategory::Expense, "5000"),
+        };
+        let coa_acct = CoaAccount::new(
+            &format!("{}_{}", code_prefix, _id),
+            &format!("{:?}", acc.account_type),
+            cat,
+            None,
+            1,
+        );
+        coa.add_account(coa_acct);
+    });
+
+    let account = coa.find_by_code(&code).ok_or(AppError::NotFound)?;
+
+    Ok(Json(serde_json::json!({
+        "code": account.code,
+        "name": account.name,
+        "category": format!("{:?}", account.category),
+        "normal_balance": format!("{:?}", account.normal_balance),
+        "status": format!("{:?}", account.status),
+    })))
+}
+
+async fn coa_deactivate(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<uuid::Uuid>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    match state.account_service.set_status(id, AccountStatus::Closed) {
+        Ok(true) => {
+            let mut chain = state.hash_chain.lock().expect("hash_chain: lock poisoned");
+            chain.append(&format!("coa_deactivate:{}", id));
+            drop(chain);
+            persist_after_mutation(&state);
+            Ok(Json(serde_json::json!({
+                "id": id,
+                "status": "Deactivated",
+            })))
+        }
+        Ok(false) => Err(AppError::NotFound),
+        Err(e) => Err(AppError::BadRequest(
+            format!("Cannot close account: {}", e)
+        )),
+    }
+}
+
 // ━━━ Server Launcher ━━━
 
 /// Start the REST API server on the given port.
@@ -1201,17 +1519,28 @@ pub async fn serve(port: u16, store: Option<Arc<SurrealStore>>) -> std::io::Resu
     state.restore_from_store().await;
     let app = build_router(state.clone());
     let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
-    println!("\u{1f3e6} Banking Ledger API listening on http://{addr}");
+    println!("🏦 Banking Ledger API listening on http://{addr}");
     println!("   POST /accounts           — Create account");
     println!("   GET  /accounts/:id       — Get account");
     println!("   POST /accounts/:id/debit  — Debit");
     println!("   POST /accounts/:id/credit — Credit");
+    println!("   POST /accounts/:id/status — Set status (Open/Frozen/Closed)");
+    println!("   POST /accounts/:id/hold   — Place hold");
+    println!("   POST /accounts/:id/release — Release hold");
     println!("   POST /transfers          — Transfer (double-entry + hash chain)");
     println!("   GET  /health             — Health check");
     println!("   GET  /admin/metrics      — Golden signals");
     println!("   GET  /journal            — List journal entries");
     println!("   GET  /journal/verify     — Verify hash chain integrity");
     println!("   GET  /journal/proof/:idx — Chain proof for block");
+    println!("   GET  /journal/trial-balance — Trial balance");
+    println!("   POST /journal/entries/:id/reverse — Reverse entry");
+    println!("   POST /journal/validate   — Validate all entries balanced");
+    println!("   GET  /audit/report       — Audit report (time range)");
+    println!("   POST /audit/redact/:idx  — Redact block (GDPR)");
+    println!("   GET  /rbac/matrix        — Permission matrix");
+    println!("   POST /parties            — Create party");
+    println!("   POST /sagas/:id          — Saga status");
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, app).await

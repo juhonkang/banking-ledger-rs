@@ -36,20 +36,30 @@ pub struct EntryLeg {
 }
 
 impl EntryLeg {
+    /// Create a debit leg. Panics in debug if amount ≤ 0.
+    /// In release, returns an EntryLeg with amount=0 (caller should validate).
     pub fn debit(account_id: AccountId, amount_cents: i64) -> Self {
+        debug_assert!(amount_cents > 0, "EntryLeg::debit requires amount_cents > 0, got {}", amount_cents);
         Self {
             account_id,
             side: EntrySide::Debit,
-            amount_cents,
+            // Use saturating to 0 in release — caller is responsible for validation.
+            // A 0-amount leg will be caught by JournalEntry::new() MissingSide check.
+            amount_cents: if amount_cents > 0 { amount_cents } else { 0 },
             amount: None,
         }
     }
 
+    /// Create a credit leg. Panics in debug if amount ≤ 0.
+    /// In release, returns an EntryLeg with amount=0 (caller should validate).
     pub fn credit(account_id: AccountId, amount_cents: i64) -> Self {
+        debug_assert!(amount_cents > 0, "EntryLeg::credit requires amount_cents > 0, got {}", amount_cents);
         Self {
             account_id,
             side: EntrySide::Credit,
-            amount_cents,
+            // Use saturating to 0 in release — caller is responsible for validation.
+            // A 0-amount leg will be caught by JournalEntry::new() MissingSide check.
+            amount_cents: if amount_cents > 0 { amount_cents } else { 0 },
             amount: None,
         }
     }
@@ -88,16 +98,17 @@ impl JournalEntry {
         }
 
         // Validate balance: sum(debits) == sum(credits)
-        let total_debits: i64 = legs
+        // Use i128 to prevent overflow in large journal entries
+        let total_debits: i128 = legs
             .iter()
             .filter(|l| l.side == EntrySide::Debit)
-            .map(|l| l.amount_cents)
+            .map(|l| i128::from(l.amount_cents))
             .sum();
 
-        let total_credits: i64 = legs
+        let total_credits: i128 = legs
             .iter()
             .filter(|l| l.side == EntrySide::Credit)
-            .map(|l| l.amount_cents)
+            .map(|l| i128::from(l.amount_cents))
             .sum();
         // Must have at least one debit and one credit
         if total_debits == 0 || total_credits == 0 {
@@ -106,9 +117,11 @@ impl JournalEntry {
 
         // Validate balance: sum(debits) == sum(credits)
         if total_debits != total_credits {
+            let total_debits_i64: i64 = total_debits.try_into().unwrap_or(i64::MAX);
+            let total_credits_i64: i64 = total_credits.try_into().unwrap_or(i64::MAX);
             return Err(JournalError::Unbalanced {
-                total_debits,
-                total_credits,
+                total_debits: total_debits_i64,
+                total_credits: total_credits_i64,
             });
         }
 
@@ -125,7 +138,8 @@ impl JournalEntry {
 
     /// Create a reversing entry (e.g., to correct an error).
     /// Flips all debits to credits and vice versa.
-    pub fn reverse(&self, new_transaction_id: TransactionId, sequence_number: u64) -> Self {
+    /// Returns Err if the original entry is invalid (unbalanced).
+    pub fn reverse(&self, new_transaction_id: TransactionId, sequence_number: u64) -> Result<Self, JournalError> {
         let reversed_legs: Vec<EntryLeg> = self
             .legs
             .iter()
@@ -140,30 +154,30 @@ impl JournalEntry {
             })
             .collect();
 
-        JournalEntry {
-            id: Uuid::now_v7(),
-            transaction_id: new_transaction_id,
+        let mut reversal = Self::new(
+            new_transaction_id,
             sequence_number,
-            legs: reversed_legs,
-            description: format!("REVERSAL of {}", self.id),
-            recorded_at: Utc::now(),
-            reverses: Some(self.id),
-        }
+            reversed_legs,
+            &format!("REVERSAL of {}", self.id),
+        )?;
+        reversal.reverses = Some(self.id);
+        Ok(reversal)
     }
 
-    /// Verify this entry is still balanced (tamper detection)
+    /// Verify this entry is still balanced (tamper detection).
+    /// Uses i128 summation to prevent silent overflow.
     pub fn verify_balance(&self) -> bool {
-        let debits: i64 = self
+        let debits: i128 = self
             .legs
             .iter()
             .filter(|l| l.side == EntrySide::Debit)
-            .map(|l| l.amount_cents)
+            .map(|l| i128::from(l.amount_cents))
             .sum();
-        let credits: i64 = self
+        let credits: i128 = self
             .legs
             .iter()
             .filter(|l| l.side == EntrySide::Credit)
-            .map(|l| l.amount_cents)
+            .map(|l| i128::from(l.amount_cents))
             .sum();
         debits == credits && debits > 0
     }
@@ -199,14 +213,26 @@ impl Transaction {
         }
     }
 
-    pub fn commit(&mut self) {
+    /// Commit this transaction. Only valid for Pending transactions.
+    /// Returns false if already in a terminal state.
+    pub fn commit(&mut self) -> bool {
+        if self.status != TransactionStatus::Pending {
+            return false;
+        }
         self.status = TransactionStatus::Committed;
         self.completed_at = Some(Utc::now());
+        true
     }
 
-    pub fn reject(&mut self) {
+    /// Reject this transaction. Only valid for Pending transactions.
+    /// Returns false if already in a terminal state.
+    pub fn reject(&mut self) -> bool {
+        if self.status != TransactionStatus::Pending {
+            return false;
+        }
         self.status = TransactionStatus::Rejected;
         self.completed_at = Some(Utc::now());
+        true
     }
 }
 

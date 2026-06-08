@@ -160,9 +160,15 @@ pub fn exponential_backoff(attempt: u32, base_ms: u64, max_ms: u64) -> Duration 
     let exponential = base_ms * 2u64.pow(attempt);
     let capped = exponential.min(max_ms);
 
-    // Add jitter: ±25%
-    let jitter = (capped as f64 * 0.25 * (rand::random::<f64>() * 2.0 - 1.0)) as u64;
-    Duration::from_millis(capped + jitter)
+    // Add jitter: ±25% of the capped delay
+    // Use i64 for signed jitter calculation to avoid UB from f64→u64 on negatives
+    let jitter_i64 = (capped as f64 * 0.25 * (rand::random::<f64>() * 2.0 - 1.0)) as i64;
+    let jitter_abs = jitter_i64.unsigned_abs();
+    if jitter_i64 < 0 {
+        Duration::from_millis(capped.saturating_sub(jitter_abs))
+    } else {
+        Duration::from_millis(capped.saturating_add(jitter_abs))
+    }
 }
 
 /// Retry a fallible operation with exponential backoff.
@@ -190,7 +196,7 @@ where
         }
     }
 
-    Err(last_error.unwrap())
+    Err(last_error.expect("bug: retry_with_backoff called with max_attempts=0"))
 }
 
 // ━━━ Bulkhead ━━━
@@ -285,10 +291,10 @@ impl TokenBucket {
         let mut tokens = self.tokens.lock().unwrap();
         let mut last = self.last_refill.lock().unwrap();
 
-        // Refill
+        // Refill — rate clamped to 0 to prevent negative token accumulation
         let elapsed = last.elapsed().as_secs_f64();
-        let new_tokens = elapsed * self.rate;
-        *tokens = (*tokens + new_tokens).min(f64::from(self.capacity));
+        let new_tokens = elapsed * self.rate.max(0.0);
+        *tokens = (*tokens + new_tokens).max(0.0).min(f64::from(self.capacity));
         *last = Instant::now();
 
         if *tokens >= 1.0 {
@@ -572,15 +578,15 @@ mod tests {
 
     #[test]
     fn test_exponential_backoff() {
-        // Base 10ms, max 1s
+        // Base 10ms, max 1s, ±25% jitter
         let d0 = exponential_backoff(0, 10, 1000);
-        assert!(d0.as_millis() >= 10 && d0.as_millis() <= 25);
+        assert!(d0.as_millis() >= 7 && d0.as_millis() <= 12); // 10 ± 25%
 
         let d3 = exponential_backoff(3, 10, 1000);
-        assert!(d3.as_millis() >= 60 && d3.as_millis() <= 125);
+        assert!(d3.as_millis() >= 60 && d3.as_millis() <= 100); // 80 ± 25%
 
         let d10 = exponential_backoff(10, 10, 1000);
-        assert!(d10.as_millis() <= 1250); // capped at max
+        assert!(d10.as_millis() <= 1250); // capped at max(1000) + 25%
     }
 
     #[test]

@@ -61,6 +61,18 @@ pub enum AccountStatus {
     Closed,
 }
 
+/// Error for invalid account status transitions.
+#[derive(Debug, Clone, PartialEq, thiserror::Error)]
+pub enum AccountStatusError {
+    #[error("Cannot modify closed account")]
+    ClosedAccount,
+    #[error("Invalid status transition from {from:?} to {to:?}")]
+    InvalidTransition {
+        from: AccountStatus,
+        to: AccountStatus,
+    },
+}
+
 /// A ledger account — the heartbeat of financial truth.
 ///
 /// # Thread Safety
@@ -164,8 +176,29 @@ impl Account {
 
     // ━━━ Status Management ━━━
 
-    /// Set the account status. Thread-safe via Mutex.
-    pub fn set_status(&self, new_status: AccountStatus) {
+    /// Set the account status with state machine validation.
+    /// Valid: Open→Frozen, Frozen→Open, Open→Closed, Frozen→Closed.
+    /// Closed is terminal.
+    pub fn set_status(&self, new_status: AccountStatus) -> Result<(), AccountStatusError> {
+        let mut s = self.status.lock().unwrap();
+        let current = *s;
+        match (current, new_status) {
+            (AccountStatus::Closed, _) => return Err(AccountStatusError::ClosedAccount),
+            (AccountStatus::Open, AccountStatus::Closed)
+            | (AccountStatus::Frozen, AccountStatus::Closed)
+            | (AccountStatus::Open, AccountStatus::Frozen)
+            | (AccountStatus::Frozen, AccountStatus::Open) => {} // valid
+            _ => return Err(AccountStatusError::InvalidTransition { from: current, to: new_status }),
+        }
+        *s = new_status;
+        let mut lu = self.last_updated.lock().unwrap();
+        *lu = chrono::Utc::now();
+        Ok(())
+    }
+
+    /// Legacy: set status without validation. Only for tests.
+    #[doc(hidden)]
+    pub fn set_status_unchecked(&self, new_status: AccountStatus) {
         let mut s = self.status.lock().unwrap();
         *s = new_status;
         let mut lu = self.last_updated.lock().unwrap();
@@ -226,13 +259,14 @@ impl Account {
 
     /// Credit (deposit) to the account.
     ///
-    /// Simpler than debit — no "insufficient funds" check.
-    /// Uses `fetch_add` for atomicity.
+    /// Uses a CAS loop to detect overflow safely. While fetch_add is faster,
+    /// silent i64 overflow is unacceptable for financial operations.
     ///
     /// # Errors
     ///
     /// - [`CreditError::InvalidAmount`] — amount ≤ 0
     /// - [`CreditError::AccountNotOpen`] — account is Frozen or Closed
+    /// - [`CreditError::Overflow`] — balance would exceed i64::MAX
     #[must_use = "credit result must be checked"]
     pub fn credit(&self, amount_cents: i64) -> Result<i64, CreditError> {
         if amount_cents <= 0 {
@@ -244,13 +278,37 @@ impl Account {
             return Err(CreditError::AccountNotOpen(status));
         }
 
-        let new_balance = self.balance.fetch_add(amount_cents, Ordering::SeqCst) + amount_cents;
-        let _new_available =
-            self.available_balance.fetch_add(amount_cents, Ordering::SeqCst) + amount_cents;
-        let mut lu = self.last_updated.lock().unwrap();
-        *lu = chrono::Utc::now();
-
-        Ok(new_balance)
+        // CAS loop — safe overflow detection
+        loop {
+            let current = self.balance.load(Ordering::SeqCst);
+            let new_balance = current
+                .checked_add(amount_cents)
+                .ok_or(CreditError::Overflow)?;
+            if self
+                .balance
+                .compare_exchange(current, new_balance, Ordering::SeqCst, Ordering::SeqCst)
+                .is_ok()
+            {
+                // Update available_balance in same CAS style
+                loop {
+                    let avail = self.available_balance.load(Ordering::SeqCst);
+                    let new_avail = avail
+                        .checked_add(amount_cents)
+                        .ok_or(CreditError::Overflow)?;
+                    if self
+                        .available_balance
+                        .compare_exchange(avail, new_avail, Ordering::SeqCst, Ordering::SeqCst)
+                        .is_ok()
+                    {
+                        break;
+                    }
+                }
+                let mut lu = self.last_updated.lock().unwrap();
+                *lu = chrono::Utc::now();
+                return Ok(new_balance);
+            }
+            // CAS failed — another thread modified balance, retry
+        }
     }
 
     // ━━━ Hold Mechanism ━━━
@@ -265,8 +323,14 @@ impl Account {
             return Err(HoldError::InvalidAmount);
         }
 
+        // Prevent holds on non-Open accounts
+        let status = self.status();
+        if status != AccountStatus::Open {
+            return Err(HoldError::AccountNotOpen(status));
+        }
+
         loop {
-            let available = self.available_balance.load(Ordering::Acquire);
+            let available = self.available_balance.load(Ordering::SeqCst);
             if available < amount_cents {
                 return Err(HoldError::InsufficientFunds {
                     available,
@@ -280,8 +344,8 @@ impl Account {
                 .compare_exchange(
                     available,
                     new_available,
-                    Ordering::AcqRel,
-                    Ordering::Acquire,
+                    Ordering::SeqCst,
+                    Ordering::SeqCst,
                 )
                 .is_ok()
             {
@@ -293,14 +357,39 @@ impl Account {
     /// Release a previously placed hold.
     ///
     /// Restores `available_balance`. Does not affect `balance`.
+    /// Guards against releasing more than the total held amount
+    /// (`balance - available_balance`).
     pub fn release_hold(&self, amount_cents: i64) -> Result<(), HoldError> {
         if amount_cents <= 0 {
             return Err(HoldError::InvalidAmount);
         }
 
-        self.available_balance
-            .fetch_add(amount_cents, Ordering::AcqRel);
-        Ok(())
+        let status = self.status();
+        if status != AccountStatus::Open {
+            return Err(HoldError::AccountNotOpen(status));
+        }
+
+        loop {
+            let current = self.available_balance.load(Ordering::SeqCst);
+            let balance = self.balance.load(Ordering::SeqCst);
+            let new_val = current.checked_add(amount_cents).ok_or(HoldError::InvalidAmount)?;
+
+            // Guard: available_balance must not exceed balance
+            // (prevents releasing more than was held)
+            if new_val > balance {
+                return Err(HoldError::ReleaseExceedsHeld {
+                    available: current,
+                    balance,
+                    attempted_release: amount_cents,
+                });
+            }
+
+            if self.available_balance.compare_exchange(
+                current, new_val, Ordering::SeqCst, Ordering::SeqCst
+            ).is_ok() {
+                return Ok(());
+            }
+        }
     }
 }
 
@@ -340,6 +429,9 @@ pub enum CreditError {
     /// Account is not in Open state
     #[error("cannot credit account with status {0:?}")]
     AccountNotOpen(AccountStatus),
+    /// Balance overflow — amount would exceed i64::MAX
+    #[error("credit overflow: balance + amount would exceed i64::MAX")]
+    Overflow,
 }
 
 /// Errors that can occur during hold operations.
@@ -348,6 +440,9 @@ pub enum HoldError {
     /// Account does not exist
     #[error("account not found: {0}")]
     AccountNotFound(AccountId),
+    /// Account is not open for operations
+    #[error("account is {0:?} — must be Open")]
+    AccountNotOpen(AccountStatus),
     /// Amount must be positive
     #[error("hold amount must be positive")]
     InvalidAmount,
@@ -358,5 +453,15 @@ pub enum HoldError {
         available: i64,
         /// Requested hold amount
         hold: i64,
+    },
+    /// Attempted to release more than was held (available would exceed balance)
+    #[error("release exceeds held amount: available={available}, balance={balance}, attempted_release={attempted_release}")]
+    ReleaseExceedsHeld {
+        /// Current available balance
+        available: i64,
+        /// Current total balance (upper bound)
+        balance: i64,
+        /// Amount attempted to release
+        attempted_release: i64,
     },
 }

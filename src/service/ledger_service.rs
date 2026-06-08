@@ -87,46 +87,68 @@ impl LedgerService {
     }
 
     /// Record a compound entry with multiple legs.
-    /// All debits must equal all credits. ALL balance updates are applied.
+    /// JOURNAL-FIRST: Entry is appended to immutable journal BEFORE balance updates.
+    ///
+    /// **CRASH RECOVERY NOTE**: If a balance update fails (e.g. debit insufficient funds),
+    /// the journal entry is ALREADY committed. The journal and account balances diverge.
+    /// Production MUST use either (a) a Saga with compensating journal entries, or
+    /// (b) balance validation BEFORE journal append. The current implementation logs
+    /// the mismatch for manual reconciliation.
+    ///
+    /// All debits must equal all credits.
     pub fn record_entry(
         &self,
         transaction_id: TransactionId,
         legs: Vec<EntryLeg>,
         description: &str,
     ) -> Result<Arc<JournalEntry>, LedgerError> {
-        // 1. Validate the entry balances
-        let mut journal = self.journal.write().unwrap();
-        let seq = journal.next_sequence();
-
-        let entry = JournalEntry::new(transaction_id, seq, legs.clone(), description)
-            .map_err(LedgerError::JournalError)?;
+        // 1. Validate + append to journal FIRST (source of truth)
+        let entry = {
+            let mut journal = self.journal.write().unwrap();
+            let seq = journal.next_sequence();
+            let entry = JournalEntry::new(transaction_id, seq, legs.clone(), description)
+                .map_err(LedgerError::JournalError)?;
+            journal.append(entry)
+        };
+        // Journal lock released here — entry is durable in audit trail
 
         // 2. Apply balance updates to all accounts
         let accounts = self.accounts.read().unwrap();
         for leg in &legs {
             let account = accounts
                 .get(&leg.account_id)
-                .ok_or(LedgerError::AccountNotFound(leg.account_id))?;
+                .ok_or_else(|| {
+                    // Journal already has this entry, but account missing.
+                    // This is an invariant violation — log and flag for reconciliation.
+                    eprintln!("CRITICAL: Journal entry {} references missing account {} — reconciliation required",
+                        entry.id, leg.account_id);
+                    LedgerError::AccountNotFound(leg.account_id)
+                })?;
 
             match leg.side {
                 EntrySide::Debit => {
                     account
                         .debit(leg.amount_cents)
-                        .map_err(|e| LedgerError::DebitError(leg.account_id, e))?;
+                        .map_err(|e| {
+                            eprintln!("CRITICAL: Balance update FAILED after journal commit — entry {} debit {} on account {}: {:?}",
+                                entry.id, leg.amount_cents, leg.account_id, e);
+                            LedgerError::DebitError(leg.account_id, e)
+                        })?;
                 }
                 EntrySide::Credit => {
                     account
                         .credit(leg.amount_cents)
-                        .map_err(|e| LedgerError::CreditError(leg.account_id, e))?;
+                        .map_err(|e| {
+                            eprintln!("CRITICAL: Balance update FAILED after journal commit — entry {} credit {} on account {}: {:?}",
+                                entry.id, leg.amount_cents, leg.account_id, e);
+                            LedgerError::CreditError(leg.account_id, e)
+                        })?;
                 }
             }
         }
         drop(accounts);
 
-        // 3. Append to immutable journal
-        let entry = journal.append(entry);
-
-        // 4. Mark transaction as committed
+        // 3. Mark transaction as committed
         if let Some(txn) = self.transactions.lock().unwrap().get_mut(&transaction_id) {
             txn.commit();
         }
@@ -134,41 +156,38 @@ impl LedgerService {
         Ok(entry)
     }
 
-    /// Reverse a previously recorded entry (creates a correcting entry)
+    /// Reverse a previously recorded entry (creates a correcting entry).
+    /// JOURNAL-FIRST: reversal is appended BEFORE balance updates.
     pub fn reverse_entry(
         &self,
         original_entry_id: JournalEntryId,
         _reason: &str,
     ) -> Result<Arc<JournalEntry>, LedgerError> {
-        let (original_id, original_legs, _original_txn_id) = {
+        let original = {
             let journal = self.journal.read().unwrap();
             let original = journal
                 .entries
                 .iter()
                 .find(|e| e.id == original_entry_id)
                 .ok_or(LedgerError::EntryNotFound(original_entry_id))?;
-            (original.id, original.legs.clone(), original.transaction_id)
+            original.clone()
         };
 
-        let new_txn_id = self.begin_transaction(&format!("REV-{original_id}"));
+        let new_txn_id = self.begin_transaction(&format!("REV-{original_entry_id}"));
 
-        // Build reversal legs manually
-        let reversed_legs: Vec<EntryLeg> = original_legs
-            .iter()
-            .map(|leg| EntryLeg {
-                account_id: leg.account_id,
-                side: match leg.side {
-                    EntrySide::Debit => EntrySide::Credit,
-                    EntrySide::Credit => EntrySide::Debit,
-                },
-                amount_cents: leg.amount_cents,
-                amount: None,
-            })
-            .collect();
+        // 1. Create and append reversal to journal FIRST
+        let reversal = {
+            let mut journal = self.journal.write().unwrap();
+            let seq = journal.next_sequence();
+            let reversal = original
+                .reverse(new_txn_id, seq)
+                .map_err(LedgerError::JournalError)?;
+            journal.append(reversal)
+        };
 
-        // Apply balance updates
+        // 2. Apply balance updates from the reversal legs
         let accounts = self.accounts.read().unwrap();
-        for leg in &reversed_legs {
+        for leg in &reversal.legs {
             let account = accounts
                 .get(&leg.account_id)
                 .ok_or(LedgerError::AccountNotFound(leg.account_id))?;
@@ -187,20 +206,7 @@ impl LedgerService {
         }
         drop(accounts);
 
-        // Create and append reversal entry
-        let mut journal = self.journal.write().unwrap();
-        let seq = journal.next_sequence();
-        let reversal = JournalEntry {
-            id: Uuid::now_v7(),
-            transaction_id: new_txn_id,
-            sequence_number: seq,
-            legs: reversed_legs,
-            description: format!("REVERSAL of {original_id}"),
-            recorded_at: Utc::now(),
-            reverses: Some(original_id),
-        };
-
-        Ok(journal.append(reversal))
+        Ok(reversal)
     }
 
     /// Get all journal entries (for audit/replay)

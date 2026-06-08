@@ -102,13 +102,13 @@ impl Default for ValidationPipeline {
 /// CAS-based atomic debit (reference implementation — see account.rs)
 pub fn atomic_debit(balance: &AtomicI64, amount: i64) -> Result<i64, &'static str> {
     loop {
-        let current = balance.load(Ordering::Acquire);
+        let current = balance.load(Ordering::SeqCst);
         if current < amount {
             return Err("Insufficient funds");
         }
         let new_balance = current - amount;
         if balance
-            .compare_exchange(current, new_balance, Ordering::AcqRel, Ordering::Acquire)
+            .compare_exchange(current, new_balance, Ordering::SeqCst, Ordering::SeqCst)
             .is_ok()
         {
             return Ok(new_balance);
@@ -182,12 +182,23 @@ pub struct AnalyticsCounter {
     data: RwLock<AnalyticsData>,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct AnalyticsData {
     pub total_transactions: u64,
     pub total_volume_cents: i64,
     pub peak_balance_cents: i64,
     pub min_balance_cents: i64,
+}
+
+impl Default for AnalyticsData {
+    fn default() -> Self {
+        Self {
+            total_transactions: 0,
+            total_volume_cents: 0,
+            peak_balance_cents: i64::MIN,
+            min_balance_cents: i64::MAX, // Sentinel: no data yet
+        }
+    }
 }
 
 impl AnalyticsCounter {
@@ -206,7 +217,8 @@ impl AnalyticsCounter {
     pub fn record_transaction(&self, amount_cents: i64, new_balance: i64) {
         let mut data = self.data.write().unwrap();
         data.total_transactions += 1;
-        data.total_volume_cents += amount_cents.abs();
+        data.total_volume_cents = data.total_volume_cents
+            .saturating_add(amount_cents.unsigned_abs() as i64);
         if new_balance > data.peak_balance_cents {
             data.peak_balance_cents = new_balance;
         }

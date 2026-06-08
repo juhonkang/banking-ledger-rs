@@ -155,10 +155,9 @@ mod resilience_edge_tests {
     fn test_exponential_backoff_positive_duration() {
         for attempt in 0..10 {
             let d = exponential_backoff(attempt, 10, 60000);
-            // BUG ALERT: jitter can be negative, causing Duration subtraction
-            // The `capped + jitter` with negative jitter cast to u64 gives 0
-            // This test documents the current behavior
-            assert!(d.as_millis() >= 0);
+            // Jitter is now safe: i64 intermediate, saturating_add/sub
+            // Duration is always <= capped + 25%
+            assert!(d.as_millis() <= 75000); // 60000 + 25% = 75000
         }
     }
 

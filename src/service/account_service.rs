@@ -4,7 +4,7 @@
 use dashmap::DashMap;
 
 use crate::domain::account::{
-    Account, AccountId, AccountStatus, AccountType, CreditError, DebitError, HoldError,
+    Account, AccountId, AccountStatus, AccountStatusError, AccountType, CreditError, DebitError, HoldError,
 };
 
 pub struct AccountService {
@@ -87,13 +87,13 @@ impl AccountService {
         self.accounts.get(&account_id).map(|a| a.value().clone())
     }
 
-    /// Set account status
-    pub fn set_status(&self, account_id: AccountId, new_status: AccountStatus) -> bool {
+    /// Set account status with state machine validation.
+    pub fn set_status(&self, account_id: AccountId, new_status: AccountStatus) -> Result<bool, AccountStatusError> {
         if let Some(account) = self.accounts.get(&account_id) {
-            account.set_status(new_status);
-            true
+            account.set_status(new_status)?;
+            Ok(true)
         } else {
-            false
+            Ok(false)
         }
     }
 

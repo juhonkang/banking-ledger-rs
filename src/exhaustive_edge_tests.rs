@@ -7,7 +7,7 @@ mod exhaustive_edge_tests {
     use std::thread;
     use std::time::Duration;
 
-    use crate::domain::account::{Account, AccountStatus, AccountType, DebitError, HoldError};
+    use crate::domain::account::{Account, AccountStatus, AccountType, CreditError, DebitError, HoldError};
     use crate::domain::journal::{EntryLeg, JournalEntry, JournalError, Transaction};
     use crate::domain::money::{Currency, Money, MoneyError, RoundingMode};
     use crate::domain::coa::{ChartOfAccounts, CoaAccount, CoaCategory};
@@ -30,26 +30,26 @@ mod exhaustive_edge_tests {
     }
 
     #[test]
-    #[should_panic(expected = "attempt to add with overflow")]
-    fn test_credit_near_overflow_does_not_panic() {
+    fn test_credit_overflow_returns_error() {
         let acc = Account::new(AccountType::Asset, "USD", i64::MAX - 100, None);
         // Credit 50 — still safe
         assert!(acc.credit(50).is_ok());
-        // Credit 100 — panics in debug mode (overflow)
-        let _ = acc.credit(100);
+        // Credit 100 — would overflow, should return Err now
+        let result = acc.credit(100);
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), CreditError::Overflow));
     }
 
     #[test]
     fn test_hold_release_more_than_held() {
         let acc = Account::new(AccountType::Asset, "USD", 10000, None);
         acc.place_hold(5000).unwrap();
-        // Release more than was held — available exceeds balance! This is a bug if not guarded
-        acc.release_hold(10000).unwrap();
-        // available_balance is now 15000 (10000 - 5000 + 10000 = 15000)
-        // but current_balance is still 10000
-        // This IS a problem in real systems — should be caught
-        // Documenting: our implementation allows this (no guard)
-        assert_eq!(acc.available_balance_cents(), 15000);
+        // Release more than was held — should now return Err
+        let result = acc.release_hold(10000);
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), HoldError::ReleaseExceedsHeld { .. }));
+        // available_balance should still be 5000 (release was rejected)
+        assert_eq!(acc.available_balance_cents(), 5000);
         assert_eq!(acc.balance_cents(), 10000);
     }
 
@@ -149,11 +149,10 @@ mod exhaustive_edge_tests {
     #[test]
     fn test_transaction_reject_then_commit() {
         let mut txn = Transaction::new("TST-002");
-        txn.reject();
-        // Rejected transactions should not be committable
-        txn.commit(); // This just overwrites status
-        // Documenting: our impl doesn't prevent this
-        assert!(matches!(txn.status, crate::domain::journal::TransactionStatus::Committed));
+        assert!(txn.reject());
+        // Rejected transactions CANNOT be committed — returns false
+        assert!(!txn.commit());
+        assert!(matches!(txn.status, crate::domain::journal::TransactionStatus::Rejected));
     }
 
     // ═══════════════════════════════════════════

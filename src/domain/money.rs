@@ -95,6 +95,7 @@ impl Currency {
 
     /// Check if this is a zero-decimal currency (like JPY, VND).
     #[must_use]
+    #[cfg(feature = "full")]
     pub const fn is_zero_decimal(&self) -> bool {
         self.minor_unit == 0
     }
@@ -106,6 +107,7 @@ impl Currency {
 /// the standard for financial systems.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[non_exhaustive]
+#[cfg(feature = "full")]
 pub enum RoundingMode {
     /// Banker's rounding — round to nearest, ties to even.
     /// Minimizes cumulative rounding bias. **Default for finance.**
@@ -125,6 +127,7 @@ pub enum RoundingMode {
     Floor,
 }
 
+#[cfg(feature = "full")]
 impl RoundingMode {
     /// Apply this rounding mode to a [`Decimal`] value at the given scale.
     #[must_use]
@@ -247,6 +250,7 @@ impl Money {
 
     /// Apply rounding with the given mode.
     #[must_use]
+    #[cfg(feature = "full")]
     pub fn round(&self, mode: RoundingMode) -> Money {
         let scale = u32::from(self.currency.minor_unit);
         Money {

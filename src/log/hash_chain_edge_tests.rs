@@ -22,7 +22,7 @@ mod hash_chain_edge_tests {
         let chain = HashChain::new(test_key());
         assert_eq!(chain.len(), 1);
         assert!(!chain.is_empty());
-        assert_eq!(chain.latest().index, 0);
+        assert_eq!(chain.latest().unwrap().index, 0);
     }
 
     #[test]

@@ -62,6 +62,7 @@ impl SurrealStore {
     }
 
     /// Save an account from raw field values (no Account struct needed).
+    /// Uses parameterized queries — no SQL injection via string interpolation.
     pub async fn save_account_raw(
         &self,
         id: &str,
@@ -71,19 +72,23 @@ impl SurrealStore {
         hold_cents: i64,
         status: &str,
     ) -> Result<(), String> {
-        let sql = format!(
-            "UPSERT account:{id} CONTENT {{ \
-                account_type: '{atype}', \
-                currency: '{currency}', \
-                balance_cents: {balance_cents}, \
-                hold_cents: {hold_cents}, \
-                status: '{status}', \
-                updated_at: time::now() \
-            }}"
-        );
+        let sql = "UPSERT type::thing('account', $id) CONTENT {
+            account_type: $atype,
+            currency: $currency,
+            balance_cents: $balance_cents,
+            hold_cents: $hold_cents,
+            status: $status,
+            updated_at: time::now()
+        }";
 
         self.db
-            .query(&sql)
+            .query(sql)
+            .bind(("id", id.to_string()))
+            .bind(("atype", atype.to_string()))
+            .bind(("currency", currency.to_string()))
+            .bind(("balance_cents", balance_cents))
+            .bind(("hold_cents", hold_cents))
+            .bind(("status", status.to_string()))
             .await
             .map_err(|e| format!("save_account: {e}"))?;
 
@@ -124,68 +129,61 @@ impl SurrealStore {
             let currency = row["currency"].as_str().unwrap_or("USD").to_string();
             let balance_cents = row["balance_cents"].as_i64().unwrap_or(0);
 
-            let acc = Account::new(atype, &currency, balance_cents, Some(id));
+            // Build account with correct ID from DB (not a random new one)
+            let mut acc = Account::new(atype, &currency, balance_cents, None);
+            acc.id = id; // restore original DB identity
             accounts.push(acc);
         }
 
         Ok(accounts)
     }
 
-    /// Save a journal entry.
+    /// Save a journal entry using parameterized queries.
     pub async fn save_journal_entry(&self, entry: &JournalEntry) -> Result<(), String> {
         let legs_json = serde_json::to_string(&entry.legs)
             .map_err(|e| format!("serialize legs: {e}"))?;
-        let sql = format!(
-            "CREATE journal_entry CONTENT {{ \
-                transaction_id: '{}', \
-                sequence_number: {}, \
-                description: '{}', \
-                legs: {}, \
-                recorded_at: '{}' \
-            }}",
-            entry.transaction_id,
-            entry.sequence_number,
-            entry.description.replace('\'', "''"),
-            legs_json,
-            entry.recorded_at.to_rfc3339(),
-        );
+        let sql = "CREATE journal_entry CONTENT {
+            transaction_id: $txn_id,
+            sequence_number: $seq,
+            description: $desc,
+            legs: $legs,
+            recorded_at: $recorded_at
+        }";
 
         self.db
-            .query(&sql)
+            .query(sql)
+            .bind(("txn_id", entry.transaction_id.to_string()))
+            .bind(("seq", entry.sequence_number))
+            .bind(("desc", entry.description.clone()))
+            .bind(("legs", legs_json))
+            .bind(("recorded_at", entry.recorded_at.to_rfc3339()))
             .await
             .map_err(|e| format!("save_journal_entry: {e}"))?;
 
         Ok(())
     }
 
-    /// Save the entire hash chain.
+    /// Save the entire hash chain using parameterized queries.
+    /// Uses UPSERT instead of DELETE+CREATE to avoid destructive patterns.
     pub async fn save_hash_chain(&self, chain: &HashChain) -> Result<(), String> {
-        // Clear existing blocks
-        self.db
-            .query("DELETE hash_block")
-            .await
-            .map_err(|e| format!("delete hash_blocks: {e}"))?;
-
         for block in &chain.blocks {
-            let sql = format!(
-                "CREATE hash_block CONTENT {{ \
-                    index_pos: {}, \
-                    hash: '{}', \
-                    previous_hash: '{}', \
-                    data: '{}', \
-                    timestamp: '{}', \
-                    nonce: {} \
-                }}",
-                block.index,
-                block.hash,
-                block.previous_hash,
-                block.data.replace('\'', "''"),
-                block.timestamp.to_rfc3339(),
-                block.nonce,
-            );
+            let sql = "UPSERT type::thing('hash_block', $idx) CONTENT {
+                index_pos: $idx,
+                hash: $hash,
+                previous_hash: $prev,
+                data: $data,
+                timestamp: $ts,
+                nonce: $nonce
+            }";
 
             self.db
-                .query(&sql)
+                .query(sql)
+                .bind(("idx", block.index))
+                .bind(("hash", block.hash.clone()))
+                .bind(("prev", block.previous_hash.clone()))
+                .bind(("data", block.data.clone()))
+                .bind(("ts", block.timestamp.to_rfc3339()))
+                .bind(("nonce", block.nonce as i64))
                 .await
                 .map_err(|e| format!("save_hash_block {}: {e}", block.index))?;
         }

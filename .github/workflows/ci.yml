@@ -24,6 +24,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: ${{ matrix.rust }}
+          components: clippy
       
       - name: Cache cargo
         uses: actions/cache@v4
@@ -41,7 +42,7 @@ jobs:
         run: cargo test --verbose
       
       - name: Clippy (lints)
-        run: cargo clippy -- -D warnings || true
+        run: cargo clippy -- -D clippy::correctness -D clippy::suspicious -D clippy::perf -A dead_code
 
   # ═══ Integration Tests ═══
   integration:
@@ -51,6 +52,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
       
       - name: Cache cargo
         uses: actions/cache@v4

@@ -92,7 +92,7 @@ impl HashChainExt for HashChain {
     fn redact_block(&mut self, index: u64) -> Result<String, String> {
         self.redact(index)
             .map_err(|e| format!("Redaction failed: {:?}", e))?;
-        Ok(self.latest().hash.clone())
+        Ok(self.latest().expect("chain always has genesis block").hash.clone())
     }
 
     fn parallel_verify(&self) -> (bool, Vec<u64>) {
@@ -165,6 +165,9 @@ impl JournalExt for JournalEntry {
         (invalid.is_empty(), invalid)
     }
 
+    /// Compute trial balance (sum of debits/credits per account).
+    /// Uses saturating arithmetic to prevent panics on overflow.
+    /// For production, use i128 intermediates via verify_balance pattern.
     fn trial_balance(
         entries: &[JournalEntry],
     ) -> std::collections::HashMap<AccountId, (i64, i64)> {
@@ -175,8 +178,8 @@ impl JournalExt for JournalEntry {
             for leg in &entry.legs {
                 let (debits, credits) = balances.entry(leg.account_id).or_insert((0, 0));
                 match leg.side {
-                    EntrySide::Debit => *debits += leg.amount_cents,
-                    EntrySide::Credit => *credits += leg.amount_cents,
+                    EntrySide::Debit => *debits = debits.saturating_add(leg.amount_cents),
+                    EntrySide::Credit => *credits = credits.saturating_add(leg.amount_cents),
                 }
             }
         }
@@ -202,10 +205,10 @@ pub trait AccountExt {
 impl AccountExt for Account {
     fn balance_display(&self, currency: &Currency) -> String {
         let money = Money::from_minor(self.balance_cents(), currency.clone());
+        let decimals = currency.minor_unit as usize;
         format!(
-            "{} {:.2}",
-            currency.symbol,
-            money.amount
+            "{} {:.*}",
+            currency.symbol, decimals, money.amount
         )
     }
 

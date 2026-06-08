@@ -62,7 +62,7 @@ mod tests {
     #[test]
     fn test_frozen_account_rejects_debit() {
         let acc = Account::new(AccountType::Asset, "USD", 100_000, None);
-        acc.set_status(AccountStatus::Frozen);
+        acc.set_status_unchecked(AccountStatus::Frozen);
         let result = acc.debit(10_000);
         assert!(matches!(
             result,
@@ -73,7 +73,7 @@ mod tests {
     #[test]
     fn test_frozen_account_rejects_credit() {
         let acc = Account::new(AccountType::Asset, "USD", 100_000, None);
-        acc.set_status(AccountStatus::Frozen);
+        acc.set_status_unchecked(AccountStatus::Frozen);
         let result = acc.credit(10_000);
         assert!(matches!(
             result,
@@ -84,7 +84,7 @@ mod tests {
     #[test]
     fn test_closed_account_rejects_all() {
         let acc = Account::new(AccountType::Asset, "USD", 100_000, None);
-        acc.set_status(AccountStatus::Closed);
+        acc.set_status_unchecked(AccountStatus::Closed);
         assert!(acc.debit(1000).is_err());
         assert!(acc.credit(1000).is_err());
     }
@@ -92,9 +92,9 @@ mod tests {
     #[test]
     fn test_reopen_frozen_account() {
         let acc = Account::new(AccountType::Asset, "USD", 100_000, None);
-        acc.set_status(AccountStatus::Frozen);
+        acc.set_status_unchecked(AccountStatus::Frozen);
         assert!(acc.debit(1000).is_err());
-        acc.set_status(AccountStatus::Open);
+        acc.set_status_unchecked(AccountStatus::Open);
         assert!(acc.debit(1000).is_ok());
     }
 
@@ -245,12 +245,12 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "attempt to add with overflow")]
-    fn test_max_values_panics_in_debug() {
+    fn test_max_values_rejects_overflow() {
         let acc = Account::new(AccountType::Asset, "USD", i64::MAX, None);
-        // This panics in debug mode — AtomicI64 wraps in release.
-        // For production we'd use checked math.
-        let _ = acc.credit(1);
+        // Credit 1 would overflow — should return Err, not panic
+        let result = acc.credit(1);
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), CreditError::Overflow));
     }
 
     #[test]

@@ -9,7 +9,7 @@ RUN touch src/main.rs && cargo build --release
 
 # Runtime — distroless-like minimal
 FROM debian:bookworm-slim
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /app/target/release/banking-ledger /usr/local/bin/banking-ledger
 EXPOSE 3001
 HEALTHCHECK --interval=30s --timeout=3s CMD curl -f http://localhost:3001/health || exit 1
