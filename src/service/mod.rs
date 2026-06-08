@@ -1,4 +1,5 @@
 pub mod account_service;
+pub mod affinity;
 #[cfg(test)]
 mod account_service_exhaustive_test;
 #[cfg(feature = "full")]
