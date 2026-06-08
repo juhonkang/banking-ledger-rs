@@ -322,7 +322,7 @@ impl ReadModel {
                         return;
                     }
                     proj.balance_cents = new_bal as i64;
-                    proj.total_credits = proj.total_credits.wrapping_add(amount);
+                    proj.total_credits = proj.total_credits.saturating_add(amount);
                     proj.transaction_count += 1;
                     proj.last_updated = event.timestamp;
                     self.total_system_balance = new_sys as i64;
@@ -352,7 +352,7 @@ impl ReadModel {
                         return;
                     }
                     proj.balance_cents = new_bal as i64;
-                    proj.total_debits = proj.total_debits.wrapping_add(amount);
+                    proj.total_debits = proj.total_debits.saturating_add(amount);
                     proj.transaction_count += 1;
                     proj.last_updated = event.timestamp;
                     self.total_system_balance = new_sys as i64;
