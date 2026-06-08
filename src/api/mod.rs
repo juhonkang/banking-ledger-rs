@@ -428,16 +428,24 @@ async fn debit_account(
     Path(id): Path<Uuid>,
     Json(req): Json<DebitRequest>,
 ) -> Result<Json<AccountResponse>, AppError> {
+    if !state.circuit_breaker.allow_request() {
+        return Err(AppError::ServiceUnavailable);
+    }
+
     let start = std::time::Instant::now();
 
     state.account_service
         .perform_debit(id, req.amount_cents)
-        .map_err(|e| AppError::BadRequest(format!("{e:?}")))?;
+        .map_err(|e| {
+            state.circuit_breaker.record_failure();
+            AppError::BadRequest(format!("{e:?}"))
+        })?;
 
     let account = state.account_service.get_account(id).ok_or(AppError::NotFound)?;
     let currency = resolve_currency(&account.currency);
     let response = AccountResponse::from_account(&account, &currency);
     state.metrics.record_request(start.elapsed(), false);
+    state.circuit_breaker.record_success();
 
     persist_after_mutation(&state);
     Ok(Json(response))
@@ -448,11 +456,18 @@ async fn credit_account(
     Path(id): Path<Uuid>,
     Json(req): Json<CreditRequest>,
 ) -> Result<Json<AccountResponse>, AppError> {
+    if !state.circuit_breaker.allow_request() {
+        return Err(AppError::ServiceUnavailable);
+    }
+
     let start = std::time::Instant::now();
 
     state.account_service
         .perform_credit(id, req.amount_cents)
-        .map_err(|e| AppError::BadRequest(format!("{e:?}")))?;
+        .map_err(|e| {
+            state.circuit_breaker.record_failure();
+            AppError::BadRequest(format!("{e:?}"))
+        })?;
 
     let account = state.account_service.get_account(id).ok_or(AppError::NotFound)?;
     let currency = resolve_currency(&account.currency);
