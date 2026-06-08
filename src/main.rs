@@ -99,6 +99,9 @@ mod rbac_edge_tests;
 mod regression_tests;
 
 #[cfg(test)]
+mod saga_edge_tests;
+
+#[cfg(test)]
 mod serde_edge_tests;
 
 #[tokio::main]
