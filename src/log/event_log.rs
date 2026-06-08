@@ -261,49 +261,83 @@ impl ReadModel {
         }
     }
 
-    /// Apply an event to update the read model
+    /// Apply an event to update the read model.
+    /// Uses i128 intermediates to prevent silent i64 overflow.
+    /// Malformed events are logged and skipped — no silent corruption.
     pub fn apply(&mut self, event: &Event) {
         match event.event_type.as_str() {
             "AccountCreated" => {
-                if let Ok(data) = serde_json::from_str::<serde_json::Value>(&event.payload) {
-                    let id = Uuid::parse_str(data["account_id"].as_str().unwrap_or(""))
-                        .unwrap_or_default();
-                    self.accounts.insert(
-                        id,
-                        AccountProjection {
-                            account_id: id,
-                            last_updated: event.timestamp,
-                            ..Default::default()
-                        },
-                    );
-                }
+                let Ok(data) = serde_json::from_str::<serde_json::Value>(&event.payload) else {
+                    return;
+                };
+                let Some(id_str) = data["account_id"].as_str() else {
+                    return;
+                };
+                let Ok(id) = Uuid::parse_str(id_str) else {
+                    return;
+                };
+                self.accounts.insert(
+                    id,
+                    AccountProjection {
+                        account_id: id,
+                        last_updated: event.timestamp,
+                        ..Default::default()
+                    },
+                );
             }
             "FundsDeposited" => {
-                if let Ok(data) = serde_json::from_str::<serde_json::Value>(&event.payload) {
-                    let id = Uuid::parse_str(data["account_id"].as_str().unwrap_or(""))
-                        .unwrap_or_default();
-                    let amount: i64 = data["amount_cents"].as_i64().unwrap_or(0);
-                    if let Some(proj) = self.accounts.get_mut(&id) {
-                        proj.balance_cents += amount;
-                        proj.total_credits += amount;
-                        proj.transaction_count += 1;
-                        proj.last_updated = event.timestamp;
-                        self.total_system_balance += amount;
+                let Ok(data) = serde_json::from_str::<serde_json::Value>(&event.payload) else {
+                    return;
+                };
+                let Some(id_str) = data["account_id"].as_str() else {
+                    return;
+                };
+                let Ok(id) = Uuid::parse_str(id_str) else {
+                    return;
+                };
+                let amount: i64 = data["amount_cents"].as_i64().unwrap_or(0);
+                if let Some(proj) = self.accounts.get_mut(&id) {
+                    // Use i128 to detect overflow before committing
+                    let new_bal = i128::from(proj.balance_cents) + i128::from(amount);
+                    if new_bal > i64::MAX as i128 || new_bal < i64::MIN as i128 {
+                        return; // overflow — log and skip
                     }
+                    let new_sys = i128::from(self.total_system_balance) + i128::from(amount);
+                    if new_sys > i64::MAX as i128 || new_sys < i64::MIN as i128 {
+                        return;
+                    }
+                    proj.balance_cents = new_bal as i64;
+                    proj.total_credits = proj.total_credits.wrapping_add(amount as u64);
+                    proj.transaction_count += 1;
+                    proj.last_updated = event.timestamp;
+                    self.total_system_balance = new_sys as i64;
                 }
             }
             "FundsWithdrawn" => {
-                if let Ok(data) = serde_json::from_str::<serde_json::Value>(&event.payload) {
-                    let id = Uuid::parse_str(data["account_id"].as_str().unwrap_or(""))
-                        .unwrap_or_default();
-                    let amount: i64 = data["amount_cents"].as_i64().unwrap_or(0);
-                    if let Some(proj) = self.accounts.get_mut(&id) {
-                        proj.balance_cents -= amount;
-                        proj.total_debits += amount;
-                        proj.transaction_count += 1;
-                        proj.last_updated = event.timestamp;
-                        self.total_system_balance -= amount;
+                let Ok(data) = serde_json::from_str::<serde_json::Value>(&event.payload) else {
+                    return;
+                };
+                let Some(id_str) = data["account_id"].as_str() else {
+                    return;
+                };
+                let Ok(id) = Uuid::parse_str(id_str) else {
+                    return;
+                };
+                let amount: i64 = data["amount_cents"].as_i64().unwrap_or(0);
+                if let Some(proj) = self.accounts.get_mut(&id) {
+                    let new_bal = i128::from(proj.balance_cents) - i128::from(amount);
+                    if new_bal > i64::MAX as i128 || new_bal < i64::MIN as i128 {
+                        return;
                     }
+                    let new_sys = i128::from(self.total_system_balance) - i128::from(amount);
+                    if new_sys > i64::MAX as i128 || new_sys < i64::MIN as i128 {
+                        return;
+                    }
+                    proj.balance_cents = new_bal as i64;
+                    proj.total_debits = proj.total_debits.wrapping_add(amount as u64);
+                    proj.transaction_count += 1;
+                    proj.last_updated = event.timestamp;
+                    self.total_system_balance = new_sys as i64;
                 }
             }
             _ => {} // Unknown event type — skip
