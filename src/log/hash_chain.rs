@@ -92,17 +92,38 @@ impl HashLink {
 
 // ━━━ Signatures + HMAC ━━━
 
-/// HMAC-SHA256 for internal message authentication.
+/// HMAC-SHA256 per RFC 2104 — proper keyed-hash message authentication.
+/// Uses the standard construction: H((key ⊕ opad) || H((key ⊕ ipad) || message))
+/// where ipad = 0x36 repeated, opad = 0x5c repeated (block size = 64 bytes for SHA-256).
 pub fn hmac_sign(key: &[u8], message: &[u8]) -> String {
     use sha2::Sha256;
-    // Simple HMAC: H(key || H(key || message))
+
+    const BLOCK_SIZE: usize = 64;
+    let mut key_padded = [0u8; BLOCK_SIZE];
+
+    // If key is longer than block size, hash it first
+    let effective_key: &[u8] = if key.len() > BLOCK_SIZE {
+        let hashed = Sha256::digest(key);
+        key_padded[..32].copy_from_slice(&hashed);
+        &key_padded
+    } else {
+        key_padded[..key.len()].copy_from_slice(key);
+        &key_padded
+    };
+
+    // Inner: H(key ⊕ 0x36 || message)
     let mut inner = Sha256::new();
-    inner.update(key);
+    for byte in effective_key {
+        inner.update(&[*byte ^ 0x36]);
+    }
     inner.update(message);
     let inner_hash = inner.finalize();
 
+    // Outer: H(key ⊕ 0x5c || inner_hash)
     let mut outer = Sha256::new();
-    outer.update(key);
+    for byte in effective_key {
+        outer.update(&[*byte ^ 0x5c]);
+    }
     outer.update(inner_hash);
     hex::encode(outer.finalize())
 }
@@ -216,9 +237,10 @@ impl HashChain {
         self.blocks.get(index as usize)
     }
 
-    /// Get the latest block (current chain head)
-    pub fn latest(&self) -> &HashLink {
-        self.blocks.last().unwrap()
+    /// Get the latest block (current chain head).
+    /// Returns None only if the chain is somehow empty (should never happen).
+    pub fn latest(&self) -> Option<&HashLink> {
+        self.blocks.last()
     }
 
     /// Get chain length
@@ -334,18 +356,9 @@ pub enum RedactError {
 
 // ━━━ Verification ━━━
 
-/// Batch-verify multiple blocks using parallel iteration.
-/// For very large chains, this is faster than sequential verification.
+/// Batch-verify multiple blocks. Currently sequential.
+/// TODO: parallel verification via rayon feature flag for very large chains.
 pub fn parallel_verify_chain(chain: &HashChain) -> (bool, Vec<u64>) {
-    use std::sync::atomic::AtomicBool;
-
-    let _tampered: std::sync::Mutex<Vec<u64>> = std::sync::Mutex::new(Vec::new());
-    let _valid = AtomicBool::new(true);
-
-    // Check chain links in parallel using rayon if available
-    // Rayon parallel verification available with `rayon` feature
-
-    // Sequential fallback (always correct)
     chain.verify_chain()
 }
 

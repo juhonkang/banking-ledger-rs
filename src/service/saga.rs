@@ -367,9 +367,11 @@ impl TimeoutHandler {
 
     /// Register a timeout for a saga
     pub fn register(&mut self, saga_id: SagaId, timeout_seconds: u64, action: TimeoutAction) {
+        // Clamp to i64::MAX to prevent silent truncation
+        let secs = timeout_seconds.min(i64::MAX as u64) as i64;
         self.timeouts.push(TimeoutEntry {
             saga_id,
-            deadline: Utc::now() + chrono::Duration::seconds(timeout_seconds as i64),
+            deadline: Utc::now() + chrono::Duration::seconds(secs),
             callback: action,
         });
     }

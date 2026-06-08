@@ -88,16 +88,17 @@ impl JournalEntry {
         }
 
         // Validate balance: sum(debits) == sum(credits)
-        let total_debits: i64 = legs
+        // Use i128 to prevent overflow in large journal entries
+        let total_debits: i128 = legs
             .iter()
             .filter(|l| l.side == EntrySide::Debit)
-            .map(|l| l.amount_cents)
+            .map(|l| i128::from(l.amount_cents))
             .sum();
 
-        let total_credits: i64 = legs
+        let total_credits: i128 = legs
             .iter()
             .filter(|l| l.side == EntrySide::Credit)
-            .map(|l| l.amount_cents)
+            .map(|l| i128::from(l.amount_cents))
             .sum();
         // Must have at least one debit and one credit
         if total_debits == 0 || total_credits == 0 {
@@ -106,9 +107,11 @@ impl JournalEntry {
 
         // Validate balance: sum(debits) == sum(credits)
         if total_debits != total_credits {
+            let total_debits_i64: i64 = total_debits.try_into().unwrap_or(i64::MAX);
+            let total_credits_i64: i64 = total_credits.try_into().unwrap_or(i64::MAX);
             return Err(JournalError::Unbalanced {
-                total_debits,
-                total_credits,
+                total_debits: total_debits_i64,
+                total_credits: total_credits_i64,
             });
         }
 

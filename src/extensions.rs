@@ -92,7 +92,7 @@ impl HashChainExt for HashChain {
     fn redact_block(&mut self, index: u64) -> Result<String, String> {
         self.redact(index)
             .map_err(|e| format!("Redaction failed: {:?}", e))?;
-        Ok(self.latest().hash.clone())
+        Ok(self.latest().expect("chain always has genesis block").hash.clone())
     }
 
     fn parallel_verify(&self) -> (bool, Vec<u64>) {

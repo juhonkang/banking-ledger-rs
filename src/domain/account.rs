@@ -226,8 +226,11 @@ impl Account {
 
     /// Credit (deposit) to the account.
     ///
-    /// Simpler than debit — no "insufficient funds" check.
-    /// Uses `fetch_add` for atomicity.
+    /// Uses `fetch_add` for low latency. Note: there is a transient window
+    /// between the two atomic updates where `balance` may be ahead of
+    /// `available_balance`. This is safe because the invariant
+    /// `balance >= available_balance` is always maintained, and any reader
+    /// seeing a slightly stale `available` value is still correct (funds exist).
     ///
     /// # Errors
     ///
@@ -280,8 +283,8 @@ impl Account {
                 .compare_exchange(
                     available,
                     new_available,
-                    Ordering::AcqRel,
-                    Ordering::Acquire,
+                    Ordering::SeqCst,
+                    Ordering::SeqCst,
                 )
                 .is_ok()
             {
@@ -293,14 +296,22 @@ impl Account {
     /// Release a previously placed hold.
     ///
     /// Restores `available_balance`. Does not affect `balance`.
+    /// Uses checked addition to prevent overflow.
     pub fn release_hold(&self, amount_cents: i64) -> Result<(), HoldError> {
         if amount_cents <= 0 {
             return Err(HoldError::InvalidAmount);
         }
 
-        self.available_balance
-            .fetch_add(amount_cents, Ordering::AcqRel);
-        Ok(())
+        // Checked add to prevent silent overflow (BUG #2 fix)
+        loop {
+            let current = self.available_balance.load(Ordering::Acquire);
+            let new_val = current.checked_add(amount_cents).ok_or(HoldError::InvalidAmount)?;
+            if self.available_balance.compare_exchange(
+                current, new_val, Ordering::AcqRel, Ordering::Acquire
+            ).is_ok() {
+                return Ok(());
+            }
+        }
     }
 }
 
