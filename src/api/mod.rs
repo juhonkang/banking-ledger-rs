@@ -484,6 +484,11 @@ async fn set_account_status(
     Path(id): Path<Uuid>,
     Json(req): Json<serde_json::Value>,
 ) -> Result<Json<AccountResponse>, AppError> {
+    if !state.circuit_breaker.allow_request() {
+        return Err(AppError::ServiceUnavailable);
+    }
+
+    let start = std::time::Instant::now();
     let status_str = req["status"].as_str().unwrap_or("OPEN");
     let new_status = match status_str.to_uppercase().as_str() {
         "OPEN" => AccountStatus::Open,
@@ -493,14 +498,22 @@ async fn set_account_status(
     };
     match state.account_service.set_status(id, new_status) {
         Ok(true) => {}
-        Ok(false) => return Err(AppError::NotFound),
-        Err(e) => return Err(AppError::BadRequest(
-            format!("Invalid status transition: {}", e)
-        )),
+        Ok(false) => {
+            state.circuit_breaker.record_failure();
+            return Err(AppError::NotFound);
+        }
+        Err(e) => {
+            state.circuit_breaker.record_failure();
+            return Err(AppError::BadRequest(
+                format!("Invalid status transition: {}", e)
+            ));
+        }
     }
     let account = state.account_service.get_account(id).ok_or(AppError::NotFound)?;
     let currency = resolve_currency(&account.currency);
 
+    state.metrics.record_request(start.elapsed(), false);
+    state.circuit_breaker.record_success();
     persist_after_mutation(&state);
     Ok(Json(AccountResponse::from_account(&account, &currency)))
 }
@@ -517,11 +530,21 @@ async fn place_hold(
     Path(id): Path<Uuid>,
     Json(req): Json<HoldRequest>,
 ) -> Result<Json<serde_json::Value>, AppError> {
+    if !state.circuit_breaker.allow_request() {
+        return Err(AppError::ServiceUnavailable);
+    }
+    let start = std::time::Instant::now();
+
     state.account_service
         .place_hold(id, req.amount_cents)
-        .map_err(|e| AppError::BadRequest(format!("{e:?}")))?;
+        .map_err(|e| {
+            state.circuit_breaker.record_failure();
+            AppError::BadRequest(format!("{e:?}"))
+        })?;
 
     let account = state.account_service.get_account(id).ok_or(AppError::NotFound)?;
+    state.metrics.record_request(start.elapsed(), false);
+    state.circuit_breaker.record_success();
     Ok(Json(serde_json::json!({
         "id": id,
         "balance_cents": account.balance_cents(),
@@ -535,11 +558,21 @@ async fn release_hold(
     Path(id): Path<Uuid>,
     Json(req): Json<HoldRequest>,
 ) -> Result<Json<serde_json::Value>, AppError> {
+    if !state.circuit_breaker.allow_request() {
+        return Err(AppError::ServiceUnavailable);
+    }
+    let start = std::time::Instant::now();
+
     state.account_service
         .release_hold(id, req.amount_cents)
-        .map_err(|e| AppError::BadRequest(format!("{e:?}")))?;
+        .map_err(|e| {
+            state.circuit_breaker.record_failure();
+            AppError::BadRequest(format!("{e:?}"))
+        })?;
 
     let account = state.account_service.get_account(id).ok_or(AppError::NotFound)?;
+    state.metrics.record_request(start.elapsed(), false);
+    state.circuit_breaker.record_success();
     Ok(Json(serde_json::json!({
         "id": id,
         "balance_cents": account.balance_cents(),
