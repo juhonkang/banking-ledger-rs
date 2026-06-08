@@ -6,3 +6,4 @@ pub mod hash_chain;
 mod hash_chain_edge_tests;
 #[cfg(feature = "full")]
 pub mod ring_buffer;
+pub mod signing;
