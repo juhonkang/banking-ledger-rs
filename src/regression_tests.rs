@@ -84,15 +84,15 @@ mod regression_tests {
 
     #[test]
     fn regression_verify_balance_large_amounts_no_overflow() {
+        // i64::MAX debit + i64::MAX credit → sum > i64::MAX
+        // verify_balance uses i128, so no overflow
         let legs = vec![
-            EntryLeg::debit(Uuid::now_v7(), i64::MAX / 2),
-            EntryLeg::debit(Uuid::now_v7(), i64::MAX / 2),
-            EntryLeg::credit(Uuid::now_v7(), i64::MAX), // Sum = i64::MAX + 1 → i128-safe
+            EntryLeg::debit(Uuid::now_v7(), i64::MAX),
+            EntryLeg::credit(Uuid::now_v7(), i64::MAX),
         ];
         let entry = JournalEntry::new(Uuid::now_v7(), 1, legs, "large").unwrap();
-        // Must NOT silently wrap — either balanced or unbalanced, never wrong comparison
-        assert!(!entry.verify_balance()); // i64::MAX != i64::MAX/2 + i64::MAX/2? Actually wait...
-        // Either way, the point is: verify_balance runs without i64 overflow
+        // Must correctly return true (balanced) without overflow
+        assert!(entry.verify_balance());
     }
 
     // ═══════════════════════════════════════════

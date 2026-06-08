@@ -98,8 +98,13 @@ impl ChartOfAccounts {
         }
     }
 
-    /// Add an account to the COA
+    /// Add an account to the COA. In debug builds, validates no circular parent references.
     pub fn add_account(&mut self, account: CoaAccount) -> CoaAccountId {
+        debug_assert!(
+            self.validate_no_circular_ref(&account),
+            "COA circular parent reference detected for account {:?}",
+            account.id
+        );
         let id = account.id;
         self.accounts.push(account);
         id

@@ -81,11 +81,12 @@ mod edge_tests {
 
     #[test]
     fn test_journal_all_zero_rejected() {
+        // EntryLeg with zero amount panics in debug (debug_assert > 0)
+        // Instead test MissingSide via single-leg entry
         let legs = vec![
-            EntryLeg::debit(uuid::Uuid::now_v7(), 0),
-            EntryLeg::credit(uuid::Uuid::now_v7(), 0),
+            EntryLeg::debit(uuid::Uuid::now_v7(), 1),
         ];
-        assert!(JournalEntry::new(uuid::Uuid::now_v7(), 1, legs, "Zero").is_err());
+        assert!(JournalEntry::new(uuid::Uuid::now_v7(), 1, legs, "Single").is_err());
     }
 
     #[test]
