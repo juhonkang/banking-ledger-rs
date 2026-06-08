@@ -258,4 +258,44 @@ mod deep_correctness_tests {
         let expected = 1_000_000 - 16_000;
         assert_eq!(acc.balance_cents(), expected, "CAS loop terminated with correct balance");
     }
+
+    /// Verify credit+hold interleaving under 8-thread stress.
+    /// Credit uses fetch_add (CAS-free), hold uses CAS loop.
+    /// The invariant: balance >= available_balance must always hold.
+    #[test]
+    fn test_credit_and_hold_interleaving_maintains_invariant() {
+        let acc = Arc::new(Account::new(AccountType::Asset, "USD", 0, None));
+        let mut handles = vec![];
+
+        // 4 credit threads
+        for _ in 0..4 {
+            let acc = Arc::clone(&acc);
+            handles.push(std::thread::spawn(move || {
+                for _ in 0..500 {
+                    acc.credit(100).unwrap();
+                }
+            }));
+        }
+        // 4 hold+release threads
+        for _ in 0..4 {
+            let acc = Arc::clone(&acc);
+            handles.push(std::thread::spawn(move || {
+                for _ in 0..500 {
+                    acc.credit(50).unwrap();
+                    acc.place_hold(30).unwrap();
+                    acc.release_hold(30).unwrap();
+                }
+            }));
+        }
+
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        // 4*500*100 + 4*500*50 = 200,000 + 100,000 = 300,000
+        assert_eq!(acc.balance_cents(), 300_000, "total balance correct");
+        // After HOLD+RELEASE cycles complete, available == balance
+        assert_eq!(acc.available_balance_cents(), acc.balance_cents(),
+            "available must equal balance after all holds released");
+    }
 }
