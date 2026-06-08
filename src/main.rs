@@ -95,6 +95,9 @@ mod rbac_edge_tests;
 #[cfg(test)]
 mod regression_tests;
 
+#[cfg(test)]
+mod serde_edge_tests;
+
 #[tokio::main]
 async fn main() {
     println!("═══════════════════════════════════════════");
