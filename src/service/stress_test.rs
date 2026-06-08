@@ -121,7 +121,6 @@ pub fn stress_ring_buffer<T: Clone + Send + Sync + 'static>(
                         }
                     }
                 }
-                drop(timer);
             }
             (produced, chaos_hits)
         }));
@@ -183,7 +182,6 @@ pub fn stress_account_concurrent(workers: usize, ops_per_worker: usize) -> Stres
                 let _ = a.credit(1);
                 let _ = a.debit(1);
                 drop(a);
-                drop(timer);
                 operations += 1;
             }
             operations
