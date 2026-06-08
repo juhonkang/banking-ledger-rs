@@ -2,7 +2,6 @@
 // Full CRUD for accounts, transfer endpoint, audit trail.
 // Production-ready with circuit breaker, rate limiting, golden signals.
 
-use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
 
 use axum::{
@@ -17,11 +16,10 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::domain::account::{Account, AccountId, AccountStatus, AccountType};
-use crate::domain::coa::CoaCategory;
-use crate::domain::identifier::{IdentifierType};
-use crate::domain::journal::{EntryLeg, JournalEntry};
+use crate::domain::identifier::IdentifierType;
+use crate::domain::journal::{EntryLeg, JournalEntry, Transaction};
 use crate::domain::money::{Currency, Money};
-use crate::domain::party::{Party, PartyStatus, PartyType};
+use crate::domain::party::PartyType;
 use crate::extensions::{AccountExt, HashChainExt, JournalExt};
 use crate::log::hash_chain::HashChain;
 use crate::rbac::{extract_subject, Permission, RbacEngine, RbacExt, SubjectId};
@@ -313,6 +311,17 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/rbac/subject/{id}", get(get_subject_roles))
         .route("/rbac/audit", get(rbac_audit_export))
         .route("/rbac/matrix", get(rbac_matrix))
+        // Identifier versioning
+        .route("/identifiers/{id}/replace", post(replace_identifier))
+        // Journal reversals
+        .route("/journal/entries/{id}/reverse", post(reverse_journal_entry))
+        // Transaction lifecycle
+        .route("/transactions", post(create_transaction))
+        .route("/transactions/{id}/commit", post(commit_transaction))
+        .route("/transactions/{id}/reject", post(reject_transaction))
+        // COA queries
+        .route("/coa/by-code/{code}", get(coa_by_code))
+        .route("/coa/deactivate/{id}", post(coa_deactivate))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             rate_limit_middleware,
@@ -1191,6 +1200,221 @@ async fn coa_summary(State(state): State<Arc<AppState>>) -> Json<serde_json::Val
         "chart_of_accounts": accounts,
         "total_count": accounts.len(),
     }))
+}
+
+// ━━━ Identifier Replacement ━━━
+
+#[derive(Deserialize)]
+struct ReplaceIdentifierRequest {
+    new_value: String,
+}
+
+async fn replace_identifier(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<uuid::Uuid>,
+    Json(req): Json<ReplaceIdentifierRequest>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let mut svc = state.identity_service.write().unwrap();
+
+    // Verify the identifier exists
+    let mut exists = false;
+    svc.for_each_party(|party| {
+        if !exists {
+            for ident in svc.get_active_identifiers(party.id) {
+                if ident.id == id {
+                    exists = true;
+                    break;
+                }
+            }
+        }
+    });
+
+    if !exists {
+        return Err(AppError::NotFound);
+    }
+
+    let replacement = svc.replace_identifier(
+        id,
+        &req.new_value,
+    ).map_err(|e| AppError::BadRequest(e.to_string()))?;
+
+    Ok(Json(serde_json::json!({
+        "old_id": id,
+        "new_id": replacement.id,
+        "new_value": replacement.value,
+        "status": format!("{:?}", replacement.status),
+        "replaces": id,
+    })))
+}
+
+// ━━━ Journal Reversal ━━━
+
+async fn reverse_journal_entry(
+    State(state): State<Arc<AppState>>,
+    Path(entry_id): Path<uuid::Uuid>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let journal = state.journal.read().unwrap();
+
+    let original = journal
+        .iter()
+        .find(|e| e.id == entry_id)
+        .cloned()
+        .ok_or(AppError::NotFound)?;
+
+    drop(journal);
+
+    let new_txn_id = uuid::Uuid::now_v7();
+    let next_seq = {
+        let mut seq = state.journal_seq.lock().unwrap();
+        *seq += 1;
+        *seq
+    };
+
+    let reversal = original.reverse(new_txn_id, next_seq);
+
+    let mut chain = state.hash_chain.lock().unwrap();
+    let block_data = serde_json::json!({
+        "action": "journal_reversal",
+        "entry_id": reversal.id.to_string(),
+        "reverses": entry_id.to_string(),
+        "description": reversal.description,
+        "sequence": next_seq,
+    });
+    chain.append(&block_data.to_string());
+    drop(chain);
+
+    state.journal.write().unwrap().push(reversal.clone());
+
+    persist_after_mutation(&state);
+
+    Ok(Json(serde_json::json!({
+        "reversal_id": reversal.id,
+        "reverses": entry_id,
+        "transaction_id": new_txn_id,
+        "sequence_number": next_seq,
+        "legs": reversal.legs.iter().map(|l| serde_json::json!({
+            "account_id": l.account_id,
+            "side": format!("{:?}", l.side),
+            "amount_cents": l.amount_cents,
+        })).collect::<Vec<_>>(),
+    })))
+}
+
+// ━━━ Transaction Lifecycle ━━━
+
+#[derive(Deserialize)]
+struct CreateTransactionRequest {
+    reference: String,
+}
+
+async fn create_transaction(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<CreateTransactionRequest>,
+) -> Json<serde_json::Value> {
+    let txn = Transaction::new(&req.reference);
+
+    Json(serde_json::json!({
+        "transaction_id": txn.id,
+        "reference": txn.reference,
+        "status": "Pending",
+        "created_at": txn.created_at.to_rfc3339(),
+    }))
+}
+
+async fn commit_transaction(
+    State(state): State<Arc<AppState>>,
+    Path(txn_id): Path<uuid::Uuid>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let mut chain = state.hash_chain.lock().unwrap();
+    let block_data = serde_json::json!({
+        "action": "transaction_commit",
+        "transaction_id": txn_id.to_string(),
+    });
+    chain.append(&block_data.to_string());
+    drop(chain);
+
+    Ok(Json(serde_json::json!({
+        "transaction_id": txn_id,
+        "status": "Committed",
+        "completed_at": chrono::Utc::now().to_rfc3339(),
+    })))
+}
+
+async fn reject_transaction(
+    State(state): State<Arc<AppState>>,
+    Path(txn_id): Path<uuid::Uuid>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let mut chain = state.hash_chain.lock().unwrap();
+    let block_data = serde_json::json!({
+        "action": "transaction_reject",
+        "transaction_id": txn_id.to_string(),
+    });
+    chain.append(&block_data.to_string());
+    drop(chain);
+
+    Ok(Json(serde_json::json!({
+        "transaction_id": txn_id,
+        "status": "Rejected",
+        "completed_at": chrono::Utc::now().to_rfc3339(),
+    })))
+}
+
+// ━━━ COA Query Handlers ━━━
+
+async fn coa_by_code(
+    State(state): State<Arc<AppState>>,
+    Path(code): Path<String>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    use crate::domain::coa::{CoaAccount, ChartOfAccounts, CoaCategory};
+    use crate::domain::account::AccountType;
+
+    let mut coa = ChartOfAccounts::new(1);
+    state.account_service.for_each(|_id, acc| {
+        let (cat, code_prefix) = match acc.account_type {
+            AccountType::Asset => (CoaCategory::Asset, "1000"),
+            AccountType::Liability => (CoaCategory::Liability, "2000"),
+            AccountType::Equity => (CoaCategory::Equity, "3000"),
+            AccountType::Revenue => (CoaCategory::Revenue, "4000"),
+            AccountType::Expense => (CoaCategory::Expense, "5000"),
+        };
+        let coa_acct = CoaAccount::new(
+            &format!("{}_{}", code_prefix, _id),
+            &format!("{:?}", acc.account_type),
+            cat,
+            None,
+            1,
+        );
+        coa.add_account(coa_acct);
+    });
+
+    let account = coa.find_by_code(&code).ok_or(AppError::NotFound)?;
+
+    Ok(Json(serde_json::json!({
+        "code": account.code,
+        "name": account.name,
+        "category": format!("{:?}", account.category),
+        "normal_balance": format!("{:?}", account.normal_balance),
+        "status": format!("{:?}", account.status),
+    })))
+}
+
+async fn coa_deactivate(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<uuid::Uuid>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let success = state.account_service.set_status(id, AccountStatus::Closed);
+    if success {
+        let mut chain = state.hash_chain.lock().unwrap();
+        chain.append(&format!("coa_deactivate:{}", id));
+        drop(chain);
+        persist_after_mutation(&state);
+        Ok(Json(serde_json::json!({
+            "id": id,
+            "status": "Deactivated",
+        })))
+    } else {
+        Err(AppError::NotFound)
+    }
 }
 
 // ━━━ Server Launcher ━━━
