@@ -564,4 +564,160 @@ mod tests {
         handler.clear(saga_id);
         assert!(handler.check_expired().is_empty());
     }
+
+    // ━━━ Saga Edge Cases ━━━
+
+    fn make_three_step_saga() -> SagaDefinition {
+        SagaDefinition {
+            name: "ThreeStep".into(),
+            steps: vec![
+                SagaStep {
+                    name: "Step1".into(),
+                    action: SagaAction::Debit { account_id: Uuid::now_v7(), amount_cents: 100 },
+                    compensation: SagaAction::Credit { account_id: Uuid::now_v7(), amount_cents: 100 },
+                    max_retries: 2,
+                    timeout_seconds: 30,
+                },
+                SagaStep {
+                    name: "Step2".into(),
+                    action: SagaAction::Credit { account_id: Uuid::now_v7(), amount_cents: 50 },
+                    compensation: SagaAction::Debit { account_id: Uuid::now_v7(), amount_cents: 50 },
+                    max_retries: 2,
+                    timeout_seconds: 30,
+                },
+                SagaStep {
+                    name: "Step3".into(),
+                    action: SagaAction::Credit { account_id: Uuid::now_v7(), amount_cents: 25 },
+                    compensation: SagaAction::Debit { account_id: Uuid::now_v7(), amount_cents: 25 },
+                    max_retries: 2,
+                    timeout_seconds: 30,
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn test_saga_not_found() {
+        let orch = SagaOrchestrator::new();
+        let result = orch.next_action(Uuid::now_v7());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_start_unknown_definition() {
+        let mut orch = SagaOrchestrator::new();
+        let result = orch.start("NonExistentSaga");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_multiple_saga_instances_independent() {
+        let mut orch = SagaOrchestrator::new();
+        orch.register(make_transfer_saga());
+        let id1 = orch.start("BankTransfer").unwrap();
+        let id2 = orch.start("BankTransfer").unwrap();
+        // Two different instances
+        assert_ne!(id1, id2);
+    }
+
+    #[test]
+    fn test_compensation_on_first_step_failure() {
+        let mut orch = SagaOrchestrator::new();
+        orch.register(make_transfer_saga());
+        let saga_id = orch.start("BankTransfer").unwrap();
+
+        // Fail immediately on step 1
+        let compensations = orch.step_failed(saga_id, "Immediate failure".into()).unwrap();
+        // No prior steps to compensate
+        assert!(compensations.is_empty());
+    }
+
+    #[test]
+    fn test_three_step_compensation_lifo() {
+        let mut orch = SagaOrchestrator::new();
+        orch.register(make_three_step_saga());
+        let saga_id = orch.start("ThreeStep").unwrap();
+
+        // Step 1 succeeds
+        let (idx, _) = orch.next_action(saga_id).unwrap();
+        assert_eq!(idx, 0);
+        orch.step_succeeded(saga_id).unwrap();
+
+        // Step 2 succeeds
+        let (idx, _) = orch.next_action(saga_id).unwrap();
+        assert_eq!(idx, 1);
+        orch.step_succeeded(saga_id).unwrap();
+
+        // Step 3 fails — should compensate 2, then 1 (LIFO)
+        let compensations = orch.step_failed(saga_id, "Step 3 failed".into()).unwrap();
+        assert_eq!(compensations.len(), 2); // Reverse of step 2 + step 1
+        // First compensation should be for step 2
+        assert!(matches!(compensations[0], SagaAction::Debit { .. })); // Reverse of Credit
+    }
+
+    #[test]
+    fn test_saga_timeout_via_step_failure() {
+        let mut orch = SagaOrchestrator::new();
+        orch.register(make_transfer_saga());
+        let saga_id = orch.start("BankTransfer").unwrap();
+
+        // Start step 1
+        let (_idx, _) = orch.next_action(saga_id).unwrap();
+
+        // Fail with timeout reason — should trigger compensation flow
+        let compensations = orch.step_failed(saga_id, "Timeout expired".into()).unwrap();
+        // First step failed with no prior completions → empty compensations
+        assert_eq!(compensations.len(), 0);
+    }
+
+    #[test]
+    fn test_outbox_ordering_fifo() {
+        let mut outbox = Outbox::new();
+        let agg_id = Uuid::now_v7();
+
+        outbox.enqueue(agg_id, "First", "{}");
+        outbox.enqueue(agg_id, "Second", "{}");
+        outbox.enqueue(agg_id, "Third", "{}");
+
+        let pending = outbox.pending_messages();
+        assert_eq!(pending.len(), 3);
+        // FIFO order
+        assert_eq!(pending[0].event_type, "First");
+        assert_eq!(pending[1].event_type, "Second");
+        assert_eq!(pending[2].event_type, "Third");
+    }
+
+    #[test]
+    fn test_outbox_partial_publish() {
+        let mut outbox = Outbox::new();
+        let agg_id = Uuid::now_v7();
+
+        outbox.enqueue(agg_id, "A", "{}");
+        outbox.enqueue(agg_id, "B", "{}");
+        outbox.enqueue(agg_id, "C", "{}");
+
+        // Collect IDs before mutable borrow
+        let ids: Vec<Uuid> = outbox.pending_messages().iter().map(|m| m.id).collect();
+        outbox.mark_published(ids[0]);
+        outbox.mark_published(ids[1]);
+
+        let remaining = outbox.pending_messages();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].event_type, "C");
+    }
+
+    #[test]
+    fn test_timeout_multiple_sagas() {
+        let mut handler = TimeoutHandler::new();
+        let s1 = Uuid::now_v7();
+        let s2 = Uuid::now_v7();
+        let s3 = Uuid::now_v7();
+
+        handler.register(s1, 0, TimeoutAction::Compensate);
+        handler.register(s2, 3600, TimeoutAction::Retry); // not expired
+        handler.register(s3, 0, TimeoutAction::Alert);
+
+        let expired = handler.check_expired();
+        assert_eq!(expired.len(), 2); // s1 and s3 expired, s2 not
+    }
 }
