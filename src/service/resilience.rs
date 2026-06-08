@@ -1,8 +1,9 @@
 //! Resilience patterns for high-availability financial systems.
 //! Circuit breakers, exponential backoff, bulkhead isolation,
 //! rate limiting, SLOs, golden signals, chaos engineering.
-
+use dashmap::DashMap;
 use std::collections::VecDeque;
+use std::fmt::Debug;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -328,6 +329,10 @@ pub struct GoldenSignals {
     request_count: AtomicU64,
     /// Error count in current window
     error_count: AtomicU64,
+    /// Error count by category (INSUFFICIENT_FUNDS, TIMEOUT, SYSTEM_ERROR, etc.)
+    error_categories: DashMap<String, AtomicU64>,
+    /// Latency bucket counts: "<10ms", "10-50ms", "50-100ms", ">100ms"
+    latency_buckets: DashMap<String, AtomicU64>,
     /// Current saturation (active connections / max)
     saturation: AtomicU64,
     max_samples: usize,
@@ -335,20 +340,41 @@ pub struct GoldenSignals {
 
 impl GoldenSignals {
     pub fn new(max_samples: usize) -> Self {
+        let latency_buckets = DashMap::new();
+        latency_buckets.insert("<10ms".to_string(), AtomicU64::new(0));
+        latency_buckets.insert("10-50ms".to_string(), AtomicU64::new(0));
+        latency_buckets.insert("50-100ms".to_string(), AtomicU64::new(0));
+        latency_buckets.insert(">100ms".to_string(), AtomicU64::new(0));
         Self {
             latency_samples: Mutex::new(VecDeque::with_capacity(max_samples)),
             request_count: AtomicU64::new(0),
             error_count: AtomicU64::new(0),
+            error_categories: DashMap::new(),
+            latency_buckets,
             saturation: AtomicU64::new(0),
             max_samples,
         }
     }
 
-    /// Record a request
+    /// Record a request with error category and latency bucketing.
     pub fn record_request(&self, latency: Duration, is_error: bool) {
         self.request_count.fetch_add(1, Ordering::Relaxed);
         if is_error {
             self.error_count.fetch_add(1, Ordering::Relaxed);
+        }
+
+        // Latency bucketing
+        let bucket = if latency < Duration::from_millis(10) {
+            "<10ms"
+        } else if latency < Duration::from_millis(50) {
+            "10-50ms"
+        } else if latency < Duration::from_millis(100) {
+            "50-100ms"
+        } else {
+            ">100ms"
+        };
+        if let Some(b) = self.latency_buckets.get(bucket) {
+            b.fetch_add(1, Ordering::Relaxed);
         }
 
         let mut samples = self.latency_samples.lock().unwrap();
@@ -356,6 +382,45 @@ impl GoldenSignals {
             samples.pop_front();
         }
         samples.push_back(latency);
+    }
+
+    /// Record an error with a category for observability.
+    pub fn record_error(&self, error_type: &str) {
+        self.error_count.fetch_add(1, Ordering::Relaxed);
+        let counter = self
+            .error_categories
+            .entry(error_type.to_string())
+            .or_insert_with(|| AtomicU64::new(0));
+        counter.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Get error counts by category.
+    pub fn errors_by_category(&self) -> Vec<(String, u64)> {
+        self.error_categories
+            .iter()
+            .map(|e| (e.key().clone(), e.value().load(Ordering::Relaxed)))
+            .collect()
+    }
+
+    /// Get latency bucket distribution.
+    pub fn latency_bucket_counts(&self) -> Vec<(String, u64)> {
+        self.latency_buckets
+            .iter()
+            .map(|e| (e.key().clone(), e.value().load(Ordering::Relaxed)))
+            .collect()
+    }
+
+    /// Reset all counters including categorised errors and latency buckets.
+    pub fn reset(&self) {
+        self.request_count.store(0, Ordering::SeqCst);
+        self.error_count.store(0, Ordering::SeqCst);
+        self.latency_samples.lock().unwrap().clear();
+        for e in self.error_categories.iter() {
+            e.value().store(0, Ordering::SeqCst);
+        }
+        for b in self.latency_buckets.iter() {
+            b.value().store(0, Ordering::SeqCst);
+        }
     }
 
     /// Set current saturation level
@@ -392,13 +457,6 @@ impl GoldenSignals {
     /// Current RPS (simple — caller tracks time window externally)
     pub fn total_requests(&self) -> u64 {
         self.request_count.load(Ordering::Relaxed)
-    }
-
-    /// Reset all counters
-    pub fn reset(&self) {
-        self.request_count.store(0, Ordering::SeqCst);
-        self.error_count.store(0, Ordering::SeqCst);
-        self.latency_samples.lock().unwrap().clear();
     }
 }
 
