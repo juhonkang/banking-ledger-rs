@@ -84,7 +84,16 @@ mod boundary_probe_tests;
 mod boundary_probe_extended_tests;
 
 #[cfg(test)]
+mod advanced_edge_tests;
+
+#[cfg(test)]
+mod affinity_edge_tests;
+
+#[cfg(test)]
 mod event_bus_edge_cases;
+
+#[cfg(test)]
+mod event_log_edge_tests;
 
 #[cfg(test)]
 mod hash_chain_verify_edge_tests;
@@ -106,6 +115,9 @@ mod saga_edge_tests;
 
 #[cfg(test)]
 mod serde_edge_tests;
+
+#[cfg(test)]
+mod surrealdb_edge_tests;
 
 #[tokio::main]
 async fn main() {

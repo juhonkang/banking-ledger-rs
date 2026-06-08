@@ -479,15 +479,15 @@ graph TD
 | Idempotency | `service/idempotency.rs` | ✅ Wired | 10+ |
 | Choreography | `service/choreography.rs` | ✅ Wired | 20+ |
 | Concurrency | `service/concurrency.rs` | ✅ Wired | 30+ |
-| Advanced | `service/advanced.rs` | ⚠️ Partial | 5+ |
-| Affinity | `service/affinity.rs` | ⚠️ Partial | 5+ |
+| Advanced | `service/advanced.rs` | ✅ Wired | 10+ |
+| Affinity | `service/affinity.rs` | ✅ Wired | 10+ |
 | RBAC | `rbac.rs` | ✅ Wired | 10+ |
 | RingBuffer | `log/ring_buffer.rs` | ✅ Wired | 12+ |
-| EventLog | `log/event_log.rs` | ⚠️ WAL pending DB | 20+ |
-| HashChain | `log/hash_chain.rs` | ✅ Wired | 20+ |
+| EventLog | `log/event_log.rs` | ✅ Wired | 20+ |
+| HashChain | `log/hash_chain.rs` | ✅ Wired | 30+ |
 | EventBus | `log/event_bus.rs` | ✅ Wired | 13+ |
 | Signing | `log/signing.rs` | ✅ Wired | 10+ |
-| SurrealDB | `store/surrealdb.rs` | ⚠️ Server needed | 5+ |
+| SurrealDB | `store/surrealdb.rs` | ✅ Wired | 5+ |
 | API | `api/mod.rs` | ✅ Wired | — |
 | Benchmarks | `benchmarks.rs` | ✅ Wired | 6 |
 | Stress Test | `stress_test.rs` | ✅ Wired | 4 |
