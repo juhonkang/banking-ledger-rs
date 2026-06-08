@@ -30,4 +30,5 @@ mod resilience_edge_tests;
 pub mod saga;
 #[cfg(test)]
 mod saga_coverage_tests;
+pub mod stress_test;
 pub mod thundering_herd;

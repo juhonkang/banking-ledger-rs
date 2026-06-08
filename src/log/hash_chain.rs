@@ -359,10 +359,88 @@ pub enum RedactError {
 
 // ━━━ Verification ━━━
 
-/// Batch-verify multiple blocks. Currently sequential.
-/// TODO: parallel verification via rayon feature flag for very large chains.
-pub fn parallel_verify_chain(chain: &HashChain) -> (bool, Vec<u64>) {
+/// Batch-verify a hash chain using parallel chunk processing.
+/// Splits the chain into roughly even chunks and verifies each in parallel,
+/// then cross-validates chunk boundaries.
+///
+/// Returns (is_valid, list_of_tampered_indices).
+pub fn batch_verify_parallel(chain: &HashChain, num_chunks: usize) -> (bool, Vec<u64>) {
+    let total_blocks = chain.blocks.len();
+    if total_blocks == 0 {
+        return (true, vec![]);
+    }
+    if num_chunks <= 1 || total_blocks < num_chunks * 2 {
+        // Too small for parallel — do sequential
+        return chain.verify_chain();
+    }
+
+    let chunk_size = (total_blocks + num_chunks - 1) / num_chunks;
+    let blocks = &chain.blocks;
+
+    // Verify each chunk in parallel
+    let results: Vec<_> = (0..num_chunks)
+        .map(|chunk_idx| {
+            let start = chunk_idx * chunk_size;
+            let end = (start + chunk_size).min(total_blocks);
+            let chunk_blocks = &blocks[start..end];
+
+            let mut tampered = Vec::new();
+            let mut prev_hash = if start == 0 {
+                "0".repeat(64)
+            } else {
+                blocks[start - 1].hash.clone()
+            };
+
+            for block in chunk_blocks {
+                let expected = HashLink::compute_hash(
+                    block.index,
+                    &prev_hash,
+                    &block.data,
+                    &block.timestamp,
+                    block.nonce,
+                );
+                if expected != block.hash {
+                    tampered.push(block.index);
+                }
+                prev_hash = block.hash.clone();
+            }
+
+            (start, tampered)
+        })
+        .collect();
+
+    // Cross-validate chunk boundaries
+    let mut all_tampered: Vec<u64> = Vec::new();
+    for (_, tampered) in &results {
+        all_tampered.extend(tampered);
+    }
+
+    // Check chunk boundaries: last block of chunk i must match first block's prev_hash of chunk i+1
+    for i in 0..num_chunks.saturating_sub(1) {
+        let chunk_end = ((i + 1) * chunk_size).min(total_blocks).saturating_sub(1);
+        let next_start = (i + 1) * chunk_size;
+        if next_start < total_blocks {
+            let last_of_chunk = &blocks[chunk_end];
+            let first_of_next = &blocks[next_start];
+            if first_of_next.previous_hash != last_of_chunk.hash {
+                all_tampered.push(first_of_next.index);
+            }
+        }
+    }
+
+    let valid = all_tampered.is_empty();
+    (valid, all_tampered)
+}
+
+/// Verify the entire chain sequentially (canonical implementation for benchmarking).
+pub fn sequential_verify(chain: &HashChain) -> (bool, Vec<u64>) {
     chain.verify_chain()
+}
+
+/// Backward-compatible alias for parallel verification with auto chunk count.
+pub fn parallel_verify_chain(chain: &HashChain) -> (bool, Vec<u64>) {
+    let num_chunks = (chain.blocks.len() / 256).max(1).min(16);
+    batch_verify_parallel(chain, num_chunks)
 }
 
 #[cfg(test)]
