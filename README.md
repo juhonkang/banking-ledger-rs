@@ -8,9 +8,10 @@
 > No liability is assumed; use at your own risk.
 
 [![Rust](https://img.shields.io/badge/rust-1.89+-orange)](https://rust-lang.org)
-[![Tests](https://img.shields.io/badge/tests-168%20passed-brightgreen)](https://github.com/quincy/banking-ledger-rs/actions)
-[![CI/CD](https://img.shields.io/badge/CI-GitHub%20Actions-blue)](https://github.com/quincy/banking-ledger-rs/actions)
+[![Tests](https://img.shields.io/badge/tests-1040%20passed-brightgreen)](https://github.com/juhonkang/banking-ledger-rs/actions)
+[![CI/CD](https://img.shields.io/badge/CI-GitHub%20Actions-blue)](https://github.com/juhonkang/banking-ledger-rs/actions)
 [![Binary](https://img.shields.io/badge/binary-1.6MB-lightgrey)]()
+[![Clippy](https://img.shields.io/badge/clippy-0%20warnings-green)]()
 [![License](https://img.shields.io/badge/license-MIT-blue)]()
 
 **High-throughput financial ledger core — 100M RPS ready. Immutable. Double-entry. Hash-chain verified.**
@@ -24,7 +25,7 @@ git clone https://github.com/quincy/banking-ledger-rs
 cd banking-ledger-rs
 
 cargo build --release        # 1.6MB binary
-cargo test                   # 168 tests
+cargo test                   # 1040 tests
 cargo run                    # API on :3001
 python3 test_api.py          # 19 integration tests
 ```

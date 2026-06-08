@@ -348,6 +348,150 @@ graph LR
 
 ---
 
+
+
+---
+
+## Component Wiring — Dependency Graph
+
+```mermaid
+graph TD
+    subgraph ENTRY["ENTRY POINT"]
+        MAIN["main.rs — axum::Router<br/>42 API routes"]
+    end
+
+    subgraph API_LYR["API LAYER"]
+        API["api/mod.rs<br/>REST handlers · CB on mutators"]
+    end
+
+    subgraph SVC["SERVICE LAYER"]
+        LS["ledger_service.rs<br/>double-entry orchestration"]
+        AS["account_service.rs<br/>CAS balance · DashMap"]
+        IS["identity_service.rs<br/>Party + Identifier"]
+        SAGA["saga.rs<br/>orchestration + choreography"]
+        RES["resilience.rs<br/>CB · Bulkhead · TokenBucket · SLO"]
+        IDEM["idempotency.rs<br/>IdempotencyService · Handler"]
+        CONC["concurrency.rs<br/>CAS · Condvar · FairQueue"]
+        ADV["advanced.rs<br/>advanced operations"]
+        CHOR["choreography.rs<br/>compensating sagas"]
+        AFF["affinity.rs<br/>sticky routing"]
+    end
+
+    subgraph DOM["DOMAIN LAYER"]
+        ACC["account.rs — Account<br/>AtomicI64 CAS · Hold"]
+        JRN["journal.rs — JournalEntry<br/>immutable · double-entry"]
+        MON["money.rs — Money<br/>Decimal + Currency"]
+        PTY["party.rs — Party<br/>UUID v7"]
+        COA["coa.rs — COA<br/>tree structure"]
+        IDN["identifier.rs — Identifier"]
+    end
+
+    subgraph LOG_L["LOG LAYER"]
+        RB_L["ring_buffer.rs<br/>lock-free · cache-padded"]
+        EL_L["event_log.rs<br/>WAL · CQRS · snapshots"]
+        HC_L["hash_chain.rs<br/>SHA-256 · parallel verify"]
+        EB_L["event_bus.rs<br/>partitioned · idempotent"]
+        SIGN["signing.rs<br/>Ed25519 signatures"]
+    end
+
+    subgraph STORE_L["STORE LAYER"]
+        SURREAL["surrealdb.rs<br/>pure Rust TCP"]
+    end
+
+    subgraph RBAC_L["SECURITY"]
+        RBAC_M["rbac.rs — RbacEngine<br/>SubjectId · Role · Permission"]
+    end
+
+    MAIN --> API
+    API --> SVC
+    SVC --> DOM
+    DOM --> LOG_L
+    LOG_L --> STORE_L
+    API --> RBAC_M
+    SVC --> RBAC_M
+```
+
+## RBAC — Permission Flow
+
+```mermaid
+sequenceDiagram
+    participant Client
+    participant API as API Handler
+    participant RBAC as RbacEngine
+    participant Svc as Service Layer
+
+    Client->>API: POST /transfers
+    API->>API: extract_subject(header)
+    API->>RBAC: can(subject, InitiateTransfer)
+    alt Permission granted
+        RBAC-->>API: true
+        API->>Svc: execute transfer
+        Svc-->>API: result
+        API-->>Client: 200 OK
+    else Permission denied
+        RBAC-->>API: false
+        API-->>Client: 403 Forbidden
+    end
+```
+
+## Test Architecture
+
+```mermaid
+graph TD
+    subgraph LIB["LIB TESTS (396)"]
+        L_DOMAIN["domain/* — 200+ tests"]
+        L_SVC["service/* — 100+ tests"]
+        L_LOG["log/* — 50+ tests"]
+    end
+
+    subgraph BIN["BIN TESTS (635)"]
+        B_EDGE["edge tests — 115+ tests"]
+        B_COVERAGE["coverage tests — 200+ tests"]
+        B_REGRESSION["regression — 20 tests"]
+        B_EXHAUSTIVE["exhaustive — 50+ tests"]
+        B_STRESS["stress — 8 tests"]
+        B_BENCH["benchmarks — 6 tests"]
+    end
+
+    subgraph INT["INTEGRATION (9)"]
+        I_API["test_api.py — 5 tests"]
+        I_EXT["integration_extended — 4 tests"]
+    end
+
+    LIB --- BIN --- INT
+```
+
+## Module Inventory
+
+| Module | File | Status | Tests |
+|--------|------|--------|-------|
+| Account | `domain/account.rs` | ✅ Wired | 200+ |
+| Journal | `domain/journal.rs` | ✅ Wired | 30+ |
+| Money | `domain/money.rs` | ✅ Wired | 50+ |
+| Party | `domain/party.rs` | ✅ Wired | 15+ |
+| COA | `domain/coa.rs` | ✅ Wired | 10+ |
+| Identifier | `domain/identifier.rs` | ✅ Wired | 10+ |
+| Ledger Service | `service/ledger_service.rs` | ✅ Wired | 20+ |
+| Account Service | `service/account_service.rs` | ✅ Wired | 15+ |
+| Identity Service | `service/identity_service.rs` | ✅ Wired | 10+ |
+| Resilience | `service/resilience.rs` | ✅ Wired | 40+ |
+| Saga | `service/saga.rs` | ✅ Wired | 30+ |
+| Idempotency | `service/idempotency.rs` | ✅ Wired | 10+ |
+| Choreography | `service/choreography.rs` | ✅ Wired | 20+ |
+| Concurrency | `service/concurrency.rs` | ✅ Wired | 30+ |
+| Advanced | `service/advanced.rs` | ⚠️ Partial | 5+ |
+| Affinity | `service/affinity.rs` | ⚠️ Partial | 5+ |
+| RBAC | `rbac.rs` | ✅ Wired | 10+ |
+| RingBuffer | `log/ring_buffer.rs` | ✅ Wired | 12+ |
+| EventLog | `log/event_log.rs` | ⚠️ WAL pending DB | 20+ |
+| HashChain | `log/hash_chain.rs` | ✅ Wired | 20+ |
+| EventBus | `log/event_bus.rs` | ✅ Wired | 13+ |
+| Signing | `log/signing.rs` | ✅ Wired | 10+ |
+| SurrealDB | `store/surrealdb.rs` | ⚠️ Server needed | 5+ |
+| API | `api/mod.rs` | ✅ Wired | — |
+| Benchmarks | `benchmarks.rs` | ✅ Wired | 6 |
+| Stress Test | `stress_test.rs` | ✅ Wired | 4 |
+
 ## Commit Conventions
 
 All commits follow [Conventional Commits](https://www.conventionalcommits.org/):
