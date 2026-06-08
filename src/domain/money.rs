@@ -178,10 +178,12 @@ impl RoundingMode {
 /// # Operator Overloading
 ///
 /// ```rust
+/// # use banking_ledger::domain::money::{Money, Currency};
+/// # use rust_decimal_macros::dec;
 /// let a = Money::new(dec!(100), Currency::usd());
 /// let b = Money::new(dec!(50), Currency::usd());
-/// let c = (a + b).unwrap();  // Money + Money = Result<Money>
-/// let d = a * dec!(3);       // Money * Decimal = Money
+/// let c = (a.clone() + b).unwrap();  // Money + Money = Result<Money>
+/// let d = a * dec!(3);               // Money * Decimal = Money
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Money {
@@ -212,6 +214,8 @@ impl Money {
     /// # Example
     ///
     /// ```rust
+    /// # use banking_ledger::domain::money::{Money, Currency};
+    /// # use rust_decimal_macros::dec;
     /// let m = Money::from_minor(12345, Currency::usd());
     /// assert_eq!(m.amount, dec!(123.45));
     /// ```
