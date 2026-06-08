@@ -56,6 +56,9 @@ mod boundary_probe_tests;
 mod boundary_probe_extended_tests;
 
 #[cfg(test)]
+mod event_bus_edge_cases;
+
+#[cfg(test)]
 mod regression_tests;
 
 #[tokio::main]
