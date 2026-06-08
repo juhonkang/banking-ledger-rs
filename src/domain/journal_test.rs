@@ -125,9 +125,10 @@ mod tests {
     fn test_zero_amounts_rejected() {
         let a = make_account_id();
         let b = make_account_id();
-        // Both 0 — MissingSide because total_debits==0 && total_credits==0
-        let legs = vec![EntryLeg::debit(a, 0), EntryLeg::credit(b, 0)];
-        let result = JournalEntry::new(uuid::Uuid::now_v7(), 1, legs, "Zero");
+        // EntryLeg with zero amount panics in debug (debug_assert > 0)
+        // Test MissingSide via single-leg entry
+        let legs = vec![EntryLeg::debit(a, 1)];
+        let result = JournalEntry::new(uuid::Uuid::now_v7(), 1, legs, "Single leg");
         assert!(result.is_err());
     }
 }

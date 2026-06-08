@@ -341,6 +341,12 @@ impl Account {
             return Err(HoldError::InvalidAmount);
         }
 
+        // Prevent holds on non-Open accounts
+        let status = self.status();
+        if status != AccountStatus::Open {
+            return Err(HoldError::AccountNotOpen(status));
+        }
+
         // Checked add to prevent silent overflow (BUG #2 fix)
         loop {
             let current = self.available_balance.load(Ordering::Acquire);

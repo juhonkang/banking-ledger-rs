@@ -165,6 +165,9 @@ impl JournalExt for JournalEntry {
         (invalid.is_empty(), invalid)
     }
 
+    /// Compute trial balance (sum of debits/credits per account).
+    /// Uses saturating arithmetic to prevent panics on overflow.
+    /// For production, use i128 intermediates via verify_balance pattern.
     fn trial_balance(
         entries: &[JournalEntry],
     ) -> std::collections::HashMap<AccountId, (i64, i64)> {
@@ -175,8 +178,8 @@ impl JournalExt for JournalEntry {
             for leg in &entry.legs {
                 let (debits, credits) = balances.entry(leg.account_id).or_insert((0, 0));
                 match leg.side {
-                    EntrySide::Debit => *debits += leg.amount_cents,
-                    EntrySide::Credit => *credits += leg.amount_cents,
+                    EntrySide::Debit => *debits = debits.saturating_add(leg.amount_cents),
+                    EntrySide::Credit => *credits = credits.saturating_add(leg.amount_cents),
                 }
             }
         }
