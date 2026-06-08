@@ -65,7 +65,7 @@ mod boundary_probe_tests {
     // ━━━ retry_with_backoff ━━━
 
     #[test]
-    #[should_panic(expected = "called `Option::unwrap()`")]
+    #[should_panic(expected = "max_attempts=0")]
     fn probe_retry_max_attempts_zero_panics() {
         let _result: Result<(), &str> = retry_with_backoff(
             || Err("always fails"),

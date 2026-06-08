@@ -190,7 +190,7 @@ where
         }
     }
 
-    Err(last_error.unwrap())
+    Err(last_error.expect("bug: retry_with_backoff called with max_attempts=0"))
 }
 
 // ━━━ Bulkhead ━━━
@@ -285,10 +285,10 @@ impl TokenBucket {
         let mut tokens = self.tokens.lock().unwrap();
         let mut last = self.last_refill.lock().unwrap();
 
-        // Refill
+        // Refill — rate clamped to 0 to prevent negative token accumulation
         let elapsed = last.elapsed().as_secs_f64();
-        let new_tokens = elapsed * self.rate;
-        *tokens = (*tokens + new_tokens).min(f64::from(self.capacity));
+        let new_tokens = elapsed * self.rate.max(0.0);
+        *tokens = (*tokens + new_tokens).max(0.0).min(f64::from(self.capacity));
         *last = Instant::now();
 
         if *tokens >= 1.0 {
