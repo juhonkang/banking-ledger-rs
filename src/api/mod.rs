@@ -549,33 +549,7 @@ async fn transfer(
     let from_snapshot = state.account_service.get_account(req.from_account).ok_or(AppError::NotFound)?;
     let currency = resolve_currency(&from_snapshot.currency);
 
-    // Execute transfer: debit from account via service
-    state.account_service
-        .perform_debit(req.from_account, req.amount_cents)
-        .map_err(|e| {
-            state.circuit_breaker.record_failure();
-            AppError::BadRequest(format!("Debit failed: {e:?}"))
-        })?;
-
-    // Credit to account via service
-    state.account_service
-        .perform_credit(req.to_account, req.amount_cents)
-        .map_err(|e| {
-            // Rollback: credit back the from_account
-            let _ = state.account_service.perform_credit(req.from_account, req.amount_cents);
-            state.circuit_breaker.record_failure();
-            AppError::BadRequest(format!("Credit failed: {e:?}"))
-        })?;
-
-    // Capture post-transfer balances
-    let from_account = state.account_service.get_account(req.from_account).ok_or(AppError::NotFound)?;
-    let to_account = state.account_service.get_account(req.to_account).ok_or(AppError::NotFound)?;
-    let from_balance = from_account.balance_cents();
-    let to_balance = to_account.balance_cents();
-    drop(from_account);
-    drop(to_account);
-
-    // ━━━ Create Journal Entry ━━━
+    // ━━━ Create Journal Entry FIRST (journal-first principle) ━━━
     let mut seq = state.journal_seq.lock().expect("journal_seq: lock poisoned");
     *seq += 1;
     let sequence_number = *seq;
@@ -600,8 +574,41 @@ async fn transfer(
         chain.append(&chain_data).clone()
     };
 
-    // ━━━ Store Journal Entry ━━━
+    // ━━━ Store Journal Entry (durable BEFORE balance updates) ━━━
     state.journal.write().expect("journal: lock poisoned").push(journal_entry);
+
+    // ━━━ Apply Balance Updates ━━━
+    // Execute transfer: debit from account via service
+    state.account_service
+        .perform_debit(req.from_account, req.amount_cents)
+        .map_err(|e| {
+            state.circuit_breaker.record_failure();
+            AppError::BadRequest(format!("Debit failed: {e:?}"))
+        })?;
+
+    // Credit to account via service
+    state.account_service
+        .perform_credit(req.to_account, req.amount_cents)
+        .map_err(|e| {
+            // Rollback: credit back the from_account
+            // If rollback ALSO fails, log CRITICAL — funds may be in an inconsistent state
+            match state.account_service.perform_credit(req.from_account, req.amount_cents) {
+                Ok(_) => eprintln!("WARN: Transfer rollback succeeded — debited from={} refunded after to={} credit failed",
+                    req.from_account, req.to_account),
+                Err(rollback_err) => eprintln!("CRITICAL: Transfer rollback FAILED! from={} was debited {} cents but to={} credit failed AND rollback failed: {:?}. MANUAL RECONCILIATION REQUIRED.",
+                    req.from_account, req.amount_cents, req.to_account, rollback_err),
+            }
+            state.circuit_breaker.record_failure();
+            AppError::BadRequest(format!("Credit failed: {e:?}"))
+        })?;
+
+    // Capture post-transfer balances
+    let from_account = state.account_service.get_account(req.from_account).ok_or(AppError::NotFound)?;
+    let to_account = state.account_service.get_account(req.to_account).ok_or(AppError::NotFound)?;
+    let from_balance = from_account.balance_cents();
+    let to_balance = to_account.balance_cents();
+    drop(from_account);
+    drop(to_account);
 
     let amount_formatted = format_money(req.amount_cents, &currency);
     let amount_decimal = decimal_from_minor(req.amount_cents, &currency);
@@ -1024,7 +1031,7 @@ async fn create_party(
         "financial" => PartyType::FinancialInstitution,
         other => PartyType::Other(other.to_string()),
     };
-    let mut svc = state.identity_service.write().expect("identity_service: lock poisoned");
+    let svc = state.identity_service.read().expect("identity_service: lock poisoned");
     let party = svc.create_party(ptype, &req.legal_name);
 
     Ok(Json(serde_json::json!({
@@ -1125,15 +1132,16 @@ async fn verify_identifier(
     State(state): State<Arc<AppState>>,
     Path(id): Path<uuid::Uuid>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let svc = state.identity_service.write().expect("identity_service: lock poisoned");
+    // First, find the identifier (read-only scan)
+    let svc = state.identity_service.read().expect("identity_service: lock poisoned");
 
-    // Find the identifier across all parties
     let mut found = None;
     svc.for_each_party(|party| {
         if found.is_none() {
-            for ident in svc.get_active_identifiers(party.id) {
+            let idents = svc.get_active_identifiers(party.id);
+            for ident in &idents {
                 if ident.id == id {
-                    found = Some(ident.clone());
+                    found = Some((party.id, ident.clone()));
                     break;
                 }
             }
@@ -1141,12 +1149,17 @@ async fn verify_identifier(
     });
 
     match found {
-        Some(mut ident) => {
-            ident.verify();
+        Some((party_id, ident)) => {
+            drop(svc); // release read lock before acquiring write lock
+            // Persist the verification
+            let svc = state.identity_service.write().expect("identity_service: lock poisoned");
+            let verified = svc.replace_identifier(id, &ident.value)
+                .map_err(|e| AppError::BadRequest(e.to_string()))?;
             Ok(Json(serde_json::json!({
-                "id": ident.id,
-                "status": "Active",
-                "verified_at": ident.verified_at.map(|t| t.to_rfc3339()),
+                "id": verified.id,
+                "status": format!("{:?}", verified.status),
+                "verified_at": verified.verified_at.map(|t| t.to_rfc3339()),
+                "replaces": id.to_string(),
             })))
         }
         None => Err(AppError::NotFound),
