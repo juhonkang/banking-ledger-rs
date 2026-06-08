@@ -578,15 +578,15 @@ mod tests {
 
     #[test]
     fn test_exponential_backoff() {
-        // Base 10ms, max 1s
+        // Base 10ms, max 1s, ±25% jitter
         let d0 = exponential_backoff(0, 10, 1000);
-        assert!(d0.as_millis() >= 10 && d0.as_millis() <= 25);
+        assert!(d0.as_millis() >= 7 && d0.as_millis() <= 12); // 10 ± 25%
 
         let d3 = exponential_backoff(3, 10, 1000);
-        assert!(d3.as_millis() >= 60 && d3.as_millis() <= 125);
+        assert!(d3.as_millis() >= 60 && d3.as_millis() <= 100); // 80 ± 25%
 
         let d10 = exponential_backoff(10, 10, 1000);
-        assert!(d10.as_millis() <= 1250); // capped at max
+        assert!(d10.as_millis() <= 1250); // capped at max(1000) + 25%
     }
 
     #[test]
