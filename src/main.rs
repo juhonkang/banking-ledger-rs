@@ -90,6 +90,9 @@ mod event_bus_edge_cases;
 mod journal_audit_edge_tests;
 
 #[cfg(test)]
+mod dlq_edge_tests;
+
+#[cfg(test)]
 mod rbac_edge_tests;
 
 #[cfg(test)]
