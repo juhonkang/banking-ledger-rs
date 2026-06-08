@@ -185,6 +185,14 @@ mod event_bus_edge_tests {
 
     #[test]
     fn test_ring_buffer_mpsc_stress() {
+        // Adaptive: scale to available parallelism
+        let cores = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(2);
+        let msg_per_producer = if cores >= 8 { 2500 } else { 500 };
+        let total_msgs = msg_per_producer * 2;
+        let deadline_secs = if cores >= 8 { 5 } else { 15 };
+
         let rb = Arc::new(RingBuffer::<String>::new(16384));
         let producer_done = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let mut handles = vec![];
@@ -193,7 +201,7 @@ mod event_bus_edge_tests {
             let rb = rb.clone();
             let done = producer_done.clone();
             handles.push(thread::spawn(move || {
-                for i in 0..2500 {
+                for i in 0..msg_per_producer {
                     let msg = format!("p{}-{}", p, i);
                     loop {
                         match rb.try_push(msg.clone()) {
@@ -213,8 +221,8 @@ mod event_bus_edge_tests {
         let rb_cons = rb.clone();
         let consumer = thread::spawn(move || {
             let mut count = 0usize;
-            let deadline = std::time::Instant::now() + Duration::from_secs(5);
-            while count < 5000 {
+            let deadline = std::time::Instant::now() + Duration::from_secs(deadline_secs);
+            while count < total_msgs {
                 if rb_cons.try_pop().is_some() {
                     count += 1;
                 }
@@ -231,8 +239,6 @@ mod event_bus_edge_tests {
             h.join().unwrap();
         }
         let consumed = consumer.join().unwrap();
-        // CI runners have fewer cores — stress test is informational, not a correctness gate
-        assert!(consumed >= 1000, "Should consume substantial messages, got {}", consumed);
-        assert!(consumed <= 5000);
+        assert!(consumed >= total_msgs * 9 / 10, "Should consume >=90% messages ({} cores), got {}/{}", cores, consumed, total_msgs);
     }
 }
