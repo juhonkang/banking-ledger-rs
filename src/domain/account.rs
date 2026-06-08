@@ -308,7 +308,7 @@ impl Account {
         }
 
         loop {
-            let available = self.available_balance.load(Ordering::Acquire);
+            let available = self.available_balance.load(Ordering::SeqCst);
             if available < amount_cents {
                 return Err(HoldError::InsufficientFunds {
                     available,
@@ -349,10 +349,10 @@ impl Account {
 
         // Checked add to prevent silent overflow (BUG #2 fix)
         loop {
-            let current = self.available_balance.load(Ordering::Acquire);
+            let current = self.available_balance.load(Ordering::SeqCst);
             let new_val = current.checked_add(amount_cents).ok_or(HoldError::InvalidAmount)?;
             if self.available_balance.compare_exchange(
-                current, new_val, Ordering::AcqRel, Ordering::Acquire
+                current, new_val, Ordering::SeqCst, Ordering::SeqCst
             ).is_ok() {
                 return Ok(());
             }

@@ -102,13 +102,13 @@ impl Default for ValidationPipeline {
 /// CAS-based atomic debit (reference implementation — see account.rs)
 pub fn atomic_debit(balance: &AtomicI64, amount: i64) -> Result<i64, &'static str> {
     loop {
-        let current = balance.load(Ordering::Acquire);
+        let current = balance.load(Ordering::SeqCst);
         if current < amount {
             return Err("Insufficient funds");
         }
         let new_balance = current - amount;
         if balance
-            .compare_exchange(current, new_balance, Ordering::AcqRel, Ordering::Acquire)
+            .compare_exchange(current, new_balance, Ordering::SeqCst, Ordering::SeqCst)
             .is_ok()
         {
             return Ok(new_balance);
