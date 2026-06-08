@@ -52,6 +52,9 @@ mod deep_correctness_tests;
 mod audit_bug_regression;
 mod boundary_probe_tests;
 
+#[cfg(test)]
+mod regression_tests;
+
 #[tokio::main]
 async fn main() {
     println!("═══════════════════════════════════════════");

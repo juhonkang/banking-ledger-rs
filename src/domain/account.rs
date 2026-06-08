@@ -398,6 +398,9 @@ pub enum HoldError {
     /// Account does not exist
     #[error("account not found: {0}")]
     AccountNotFound(AccountId),
+    /// Account is not open for operations
+    #[error("account is {0:?} — must be Open")]
+    AccountNotOpen(AccountStatus),
     /// Amount must be positive
     #[error("hold amount must be positive")]
     InvalidAmount,
