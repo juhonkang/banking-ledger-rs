@@ -19,3 +19,4 @@ pub mod resilience;
 #[cfg(test)]
 mod resilience_edge_tests;
 pub mod saga;
+pub mod thundering_herd;
