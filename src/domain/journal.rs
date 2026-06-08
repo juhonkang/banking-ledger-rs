@@ -36,24 +36,30 @@ pub struct EntryLeg {
 }
 
 impl EntryLeg {
-    /// Create a debit leg. Panics in debug if amount <= 0.
+    /// Create a debit leg. Panics in debug if amount ≤ 0.
+    /// In release, returns an EntryLeg with amount=0 (caller should validate).
     pub fn debit(account_id: AccountId, amount_cents: i64) -> Self {
         debug_assert!(amount_cents > 0, "EntryLeg::debit requires amount_cents > 0, got {}", amount_cents);
         Self {
             account_id,
             side: EntrySide::Debit,
-            amount_cents: amount_cents.max(0),
+            // Use saturating to 0 in release — caller is responsible for validation.
+            // A 0-amount leg will be caught by JournalEntry::new() MissingSide check.
+            amount_cents: if amount_cents > 0 { amount_cents } else { 0 },
             amount: None,
         }
     }
 
-    /// Create a credit leg. Panics in debug if amount <= 0.
+    /// Create a credit leg. Panics in debug if amount ≤ 0.
+    /// In release, returns an EntryLeg with amount=0 (caller should validate).
     pub fn credit(account_id: AccountId, amount_cents: i64) -> Self {
         debug_assert!(amount_cents > 0, "EntryLeg::credit requires amount_cents > 0, got {}", amount_cents);
         Self {
             account_id,
             side: EntrySide::Credit,
-            amount_cents: amount_cents.max(0),
+            // Use saturating to 0 in release — caller is responsible for validation.
+            // A 0-amount leg will be caught by JournalEntry::new() MissingSide check.
+            amount_cents: if amount_cents > 0 { amount_cents } else { 0 },
             amount: None,
         }
     }

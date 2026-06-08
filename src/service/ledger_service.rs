@@ -88,8 +88,13 @@ impl LedgerService {
 
     /// Record a compound entry with multiple legs.
     /// JOURNAL-FIRST: Entry is appended to immutable journal BEFORE balance updates.
-    /// If crash occurs between journal append and balance updates, the journal entry
-    /// serves as audit trail for recovery replay.
+    ///
+    /// **CRASH RECOVERY NOTE**: If a balance update fails (e.g. debit insufficient funds),
+    /// the journal entry is ALREADY committed. The journal and account balances diverge.
+    /// Production MUST use either (a) a Saga with compensating journal entries, or
+    /// (b) balance validation BEFORE journal append. The current implementation logs
+    /// the mismatch for manual reconciliation.
+    ///
     /// All debits must equal all credits.
     pub fn record_entry(
         &self,
@@ -115,6 +120,8 @@ impl LedgerService {
                 .ok_or_else(|| {
                     // Journal already has this entry, but account missing.
                     // This is an invariant violation — log and flag for reconciliation.
+                    eprintln!("CRITICAL: Journal entry {} references missing account {} — reconciliation required",
+                        entry.id, leg.account_id);
                     LedgerError::AccountNotFound(leg.account_id)
                 })?;
 
@@ -122,12 +129,20 @@ impl LedgerService {
                 EntrySide::Debit => {
                     account
                         .debit(leg.amount_cents)
-                        .map_err(|e| LedgerError::DebitError(leg.account_id, e))?;
+                        .map_err(|e| {
+                            eprintln!("CRITICAL: Balance update FAILED after journal commit — entry {} debit {} on account {}: {:?}",
+                                entry.id, leg.amount_cents, leg.account_id, e);
+                            LedgerError::DebitError(leg.account_id, e)
+                        })?;
                 }
                 EntrySide::Credit => {
                     account
                         .credit(leg.amount_cents)
-                        .map_err(|e| LedgerError::CreditError(leg.account_id, e))?;
+                        .map_err(|e| {
+                            eprintln!("CRITICAL: Balance update FAILED after journal commit — entry {} credit {} on account {}: {:?}",
+                                entry.id, leg.amount_cents, leg.account_id, e);
+                            LedgerError::CreditError(leg.account_id, e)
+                        })?;
                 }
             }
         }
