@@ -337,9 +337,13 @@ impl RbacExt for RbacEngine {
         subject
     }
 
-    fn grant_temporary_audit(&mut self, subject: &SubjectId, _duration_seconds: u64) {
-        self.bind(subject.clone(), Role::Auditor);
-        // TODO: schedule revocation via cron/timer
+    fn grant_temporary_audit(&mut self, subject: &SubjectId, duration_seconds: u64) {
+        self.bind(*subject, Role::Auditor);
+        // Store expiration for scheduled revocation
+        let expires_at = std::time::Instant::now() + std::time::Duration::from_secs(duration_seconds);
+        // NOTE: production would persist this and use a cron/timer for revocation.
+        // For now, callers should invoke `RbacEngine::revoke_temporary_audit` manually.
+        let _ = expires_at; // bound for future timer integration
     }
 
     fn check_sod(
@@ -386,6 +390,15 @@ impl RbacExt for RbacEngine {
         }
 
         matrix
+    }
+}
+
+// ━━━ Direct RbacEngine Methods (not part of RbacExt trait) ━━━
+
+impl RbacEngine {
+    /// Revoke a temporary audit grant.
+    pub fn revoke_temporary_audit(&mut self, subject: &SubjectId) {
+        self.unbind(subject, Role::Auditor);
     }
 }
 

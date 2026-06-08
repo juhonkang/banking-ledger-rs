@@ -34,6 +34,14 @@ fn crc64(data: &[u8]) -> u64 {
     hash
 }
 
+/// Result of WAL replay — includes valid entries and corruption stats.
+#[derive(Debug, Clone)]
+pub struct ReplayResult {
+    pub entries: Vec<WalEntry>,
+    /// Number of entries that failed checksum verification
+    pub corrupted_count: usize,
+}
+
 /// A file-backed write-ahead log.
 /// All events are written here BEFORE being applied to state.
 pub struct WriteAheadLog {
@@ -77,10 +85,12 @@ impl WriteAheadLog {
     }
 
     /// Replay all entries from the WAL (used for recovery).
-    pub fn replay(path: &str) -> Result<Vec<WalEntry>, std::io::Error> {
+    /// Returns valid entries + count of corrupted (checksum-mismatched) entries.
+    pub fn replay(path: &str) -> Result<ReplayResult, std::io::Error> {
         let file = File::open(path)?;
         let reader = BufReader::new(file);
         let mut entries = Vec::new();
+        let mut corrupted_count = 0usize;
 
         for line in std::io::BufRead::lines(reader) {
             let line = line?;
@@ -97,11 +107,12 @@ impl WriteAheadLog {
                 if recomputed == stored_crc {
                     entries.push(entry);
                 } else {
+                    corrupted_count += 1;
                     eprintln!("WAL: checksum mismatch at sequence {}", entry.sequence);
                 }
             }
         }
-        Ok(entries)
+        Ok(ReplayResult { entries, corrupted_count })
     }
 }
 
@@ -230,7 +241,8 @@ pub enum CommandError {
 // ━━━ CQRS ━━━
 
 /// The write side: accepts commands, produces events.
-pub struct CommandHandler {
+/// Dispatches commands to handlers, writes events to the event store + WAL.
+pub struct CommandDispatcher {
     event_store: Mutex<EventStore>,
     wal: Option<Mutex<WriteAheadLog>>,
 }
@@ -296,6 +308,9 @@ impl ReadModel {
                     return;
                 };
                 let amount: i64 = data["amount_cents"].as_i64().unwrap_or(0);
+                if amount <= 0 {
+                    return; // malformed event — missing or invalid amount
+                }
                 if let Some(proj) = self.accounts.get_mut(&id) {
                     // Use i128 to detect overflow before committing
                     let new_bal = i128::from(proj.balance_cents) + i128::from(amount);
@@ -324,6 +339,9 @@ impl ReadModel {
                     return;
                 };
                 let amount: i64 = data["amount_cents"].as_i64().unwrap_or(0);
+                if amount <= 0 {
+                    return; // malformed event — missing or invalid amount
+                }
                 if let Some(proj) = self.accounts.get_mut(&id) {
                     let new_bal = i128::from(proj.balance_cents) - i128::from(amount);
                     if new_bal > i64::MAX as i128 || new_bal < i64::MIN as i128 {
@@ -388,7 +406,11 @@ impl SnapshotStore {
     }
 
     /// Should we take a snapshot at this version?
+    /// Returns false if frequency is 0 (snapshotting disabled).
     pub fn should_snapshot(&self, version: u64) -> bool {
+        if self.frequency == 0 {
+            return false; // snapshotting disabled — avoid division by zero
+        }
         version.is_multiple_of(self.frequency)
     }
 
@@ -460,10 +482,11 @@ mod tests {
 
         drop(wal);
 
-        let entries = WriteAheadLog::replay(path).unwrap();
-        assert_eq!(entries.len(), 2);
-        assert_eq!(entries[0].sequence, 1);
-        assert_eq!(entries[1].sequence, 2);
+        let result = WriteAheadLog::replay(path).unwrap();
+        assert_eq!(result.entries.len(), 2);
+        assert_eq!(result.entries[0].sequence, 1);
+        assert_eq!(result.entries[1].sequence, 2);
+        assert_eq!(result.corrupted_count, 0);
 
         std::fs::remove_file(path).ok();
     }

@@ -259,16 +259,14 @@ impl Account {
 
     /// Credit (deposit) to the account.
     ///
-    /// Uses `fetch_add` for low latency. Note: there is a transient window
-    /// between the two atomic updates where `balance` may be ahead of
-    /// `available_balance`. This is safe because the invariant
-    /// `balance >= available_balance` is always maintained, and any reader
-    /// seeing a slightly stale `available` value is still correct (funds exist).
+    /// Uses a CAS loop to detect overflow safely. While fetch_add is faster,
+    /// silent i64 overflow is unacceptable for financial operations.
     ///
     /// # Errors
     ///
     /// - [`CreditError::InvalidAmount`] — amount ≤ 0
     /// - [`CreditError::AccountNotOpen`] — account is Frozen or Closed
+    /// - [`CreditError::Overflow`] — balance would exceed i64::MAX
     #[must_use = "credit result must be checked"]
     pub fn credit(&self, amount_cents: i64) -> Result<i64, CreditError> {
         if amount_cents <= 0 {
@@ -280,13 +278,37 @@ impl Account {
             return Err(CreditError::AccountNotOpen(status));
         }
 
-        let new_balance = self.balance.fetch_add(amount_cents, Ordering::SeqCst) + amount_cents;
-        let _new_available =
-            self.available_balance.fetch_add(amount_cents, Ordering::SeqCst) + amount_cents;
-        let mut lu = self.last_updated.lock().unwrap();
-        *lu = chrono::Utc::now();
-
-        Ok(new_balance)
+        // CAS loop — safe overflow detection
+        loop {
+            let current = self.balance.load(Ordering::SeqCst);
+            let new_balance = current
+                .checked_add(amount_cents)
+                .ok_or(CreditError::Overflow)?;
+            if self
+                .balance
+                .compare_exchange(current, new_balance, Ordering::SeqCst, Ordering::SeqCst)
+                .is_ok()
+            {
+                // Update available_balance in same CAS style
+                loop {
+                    let avail = self.available_balance.load(Ordering::SeqCst);
+                    let new_avail = avail
+                        .checked_add(amount_cents)
+                        .ok_or(CreditError::Overflow)?;
+                    if self
+                        .available_balance
+                        .compare_exchange(avail, new_avail, Ordering::SeqCst, Ordering::SeqCst)
+                        .is_ok()
+                    {
+                        break;
+                    }
+                }
+                let mut lu = self.last_updated.lock().unwrap();
+                *lu = chrono::Utc::now();
+                return Ok(new_balance);
+            }
+            // CAS failed — another thread modified balance, retry
+        }
     }
 
     // ━━━ Hold Mechanism ━━━
@@ -396,6 +418,9 @@ pub enum CreditError {
     /// Account is not in Open state
     #[error("cannot credit account with status {0:?}")]
     AccountNotOpen(AccountStatus),
+    /// Balance overflow — amount would exceed i64::MAX
+    #[error("credit overflow: balance + amount would exceed i64::MAX")]
+    Overflow,
 }
 
 /// Errors that can occur during hold operations.

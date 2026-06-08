@@ -7,7 +7,7 @@ mod exhaustive_edge_tests {
     use std::thread;
     use std::time::Duration;
 
-    use crate::domain::account::{Account, AccountStatus, AccountType, DebitError, HoldError};
+    use crate::domain::account::{Account, AccountStatus, AccountType, CreditError, DebitError, HoldError};
     use crate::domain::journal::{EntryLeg, JournalEntry, JournalError, Transaction};
     use crate::domain::money::{Currency, Money, MoneyError, RoundingMode};
     use crate::domain::coa::{ChartOfAccounts, CoaAccount, CoaCategory};
@@ -30,13 +30,14 @@ mod exhaustive_edge_tests {
     }
 
     #[test]
-    #[should_panic(expected = "attempt to add with overflow")]
-    fn test_credit_near_overflow_does_not_panic() {
+    fn test_credit_overflow_returns_error() {
         let acc = Account::new(AccountType::Asset, "USD", i64::MAX - 100, None);
         // Credit 50 — still safe
         assert!(acc.credit(50).is_ok());
-        // Credit 100 — panics in debug mode (overflow)
-        let _ = acc.credit(100);
+        // Credit 100 — would overflow, should return Err now
+        let result = acc.credit(100);
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), CreditError::Overflow));
     }
 
     #[test]

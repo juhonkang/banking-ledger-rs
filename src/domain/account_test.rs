@@ -245,12 +245,12 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "attempt to add with overflow")]
-    fn test_max_values_panics_in_debug() {
+    fn test_max_values_rejects_overflow() {
         let acc = Account::new(AccountType::Asset, "USD", i64::MAX, None);
-        // This panics in debug mode — AtomicI64 wraps in release.
-        // For production we'd use checked math.
-        let _ = acc.credit(1);
+        // Credit 1 would overflow — should return Err, not panic
+        let result = acc.credit(1);
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), CreditError::Overflow));
     }
 
     #[test]

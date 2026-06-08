@@ -205,10 +205,10 @@ pub trait AccountExt {
 impl AccountExt for Account {
     fn balance_display(&self, currency: &Currency) -> String {
         let money = Money::from_minor(self.balance_cents(), currency.clone());
+        let decimals = currency.minor_unit as usize;
         format!(
-            "{} {:.2}",
-            currency.symbol,
-            money.amount
+            "{} {:.*}",
+            currency.symbol, decimals, money.amount
         )
     }
 
