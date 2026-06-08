@@ -41,7 +41,7 @@ jobs:
         run: cargo test --verbose
       
       - name: Clippy (lints)
-        run: cargo clippy -- -D warnings || true
+        run: cargo clippy -- -D clippy::correctness -D clippy::suspicious -D clippy::perf -A dead_code
 
   # ═══ Integration Tests ═══
   integration:
