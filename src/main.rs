@@ -50,6 +50,7 @@ mod deep_correctness_tests;
 
 #[cfg(test)]
 mod audit_bug_regression;
+mod boundary_probe_tests;
 
 #[tokio::main]
 async fn main() {
