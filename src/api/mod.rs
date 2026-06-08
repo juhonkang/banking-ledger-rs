@@ -1519,17 +1519,28 @@ pub async fn serve(port: u16, store: Option<Arc<SurrealStore>>) -> std::io::Resu
     state.restore_from_store().await;
     let app = build_router(state.clone());
     let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
-    println!("\u{1f3e6} Banking Ledger API listening on http://{addr}");
+    println!("🏦 Banking Ledger API listening on http://{addr}");
     println!("   POST /accounts           — Create account");
     println!("   GET  /accounts/:id       — Get account");
     println!("   POST /accounts/:id/debit  — Debit");
     println!("   POST /accounts/:id/credit — Credit");
+    println!("   POST /accounts/:id/status — Set status (Open/Frozen/Closed)");
+    println!("   POST /accounts/:id/hold   — Place hold");
+    println!("   POST /accounts/:id/release — Release hold");
     println!("   POST /transfers          — Transfer (double-entry + hash chain)");
     println!("   GET  /health             — Health check");
     println!("   GET  /admin/metrics      — Golden signals");
     println!("   GET  /journal            — List journal entries");
     println!("   GET  /journal/verify     — Verify hash chain integrity");
     println!("   GET  /journal/proof/:idx — Chain proof for block");
+    println!("   GET  /journal/trial-balance — Trial balance");
+    println!("   POST /journal/entries/:id/reverse — Reverse entry");
+    println!("   POST /journal/validate   — Validate all entries balanced");
+    println!("   GET  /audit/report       — Audit report (time range)");
+    println!("   POST /audit/redact/:idx  — Redact block (GDPR)");
+    println!("   GET  /rbac/matrix        — Permission matrix");
+    println!("   POST /parties            — Create party");
+    println!("   POST /sagas/:id          — Saga status");
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, app).await
