@@ -1,0 +1,25 @@
+# cargo-nextest configuration — Zero-Fat parallel test execution
+# Docs: https://nexte.st/book/configuration
+
+[profile.default]
+# Fail fast: stop after 10 failures
+fail-fast = { max-fail = 10 }
+
+# Retry flaky tests once
+retries = 1
+
+# Leak tests — auto-kill after 30s timeout
+slow-timeout = { period = "30s", terminate-after = 2 }
+
+# Parallelism: use all cores
+test-threads = "num-cpus"
+
+[profile.ci]
+fail-fast = false
+retries = 0
+slow-timeout = { period = "60s", terminate-after = 1 }
+test-threads = "num-cpus"
+
+# Store test results as JUnit XML for CI dashboards
+[profile.ci.junit]
+path = "target/nextest/ci/junit.xml"

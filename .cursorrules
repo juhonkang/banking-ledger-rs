@@ -33,3 +33,37 @@ Mọi commit PHẢI dùng conventional commits format:
 - ✅ `docs: add security model STRIDE analysis`
 - ❌ `fix: round 69 — startup banner...`
 - ❌ `feat: R77 ed25519 signatures`
+
+---
+
+# ⚡ ZERO-FAT WORKFLOW (LBO Doctrine)
+
+> **"Đừng biến Laptop thành con trâu cày test. Architect design the Matrix. Cloud runs the tests."**
+
+## Nguyên lý cốt lõi
+
+Anh là **Architect** (Thiết kế Kiến trúc), không phải **Servant** (Người hầu chạy test).
+1082 tests sau mỗi commit = Resource Burn Loop phá hủy Deep Work Flow State.
+
+## Pipeline 3 tầng
+
+| Tầng | Trigger | Lệnh | Thời gian | Mục đích |
+|------|---------|------|-----------|----------|
+| **1. Ánh sáng** | Sau mỗi function | `cargo check` | 1-2s | Type-safe? Borrow OK? |
+| **2. Phẫu thuật** | Trước commit | `cargo nextest run <target>` | 5-15s | Module vừa sửa pass? |
+| **3. Đòn bẩy** | Push lên GitHub | CI (nextest + sccache) | 10 phút | Toàn bộ 1082 tests |
+
+## Công cụ
+
+- **cargo-nextest** — Parallel test runner, fail-fast, flaky retry, JUnit XML
+- **sccache** — Mozilla compile cache, tránh dịch lại dependency không đổi
+- **Pre-push hook** — Chỉ chạy `cargo check` + `cargo clippy`, không chạy test
+- **GitHub Actions** — Chạy full 1082 tests với nextest profile ci
+
+## Quy trình
+
+```
+Code → cargo check (1s) → cargo nextest run [module] (5s) → Commit & Push
+    ↘ (Anh tiếp tục code — Zero Downtime)
+    ↘ GitHub Server chạy sccache + nextest gánh 1082 tests
+```
